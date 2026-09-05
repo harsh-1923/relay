@@ -341,8 +341,9 @@ function readEnv(file) {
 // ── phase: dev ────────────────────────────────────────────────────────────────
 function dev() {
   phase('dev');
-  step('pnpm dev          — server :8787 + client :5173');
-  step('pnpm dev:desktop  — the above, plus the Electron shell');
+  step('pnpm dev       — server :8787, client :5173, and the Electron window');
+  step('pnpm dev:web   — the same without the window');
+  step('pnpm dev:shell — restart only Electron, against a dev server already running');
   skip('apps/site, broker and runtime are still Phase 0 stubs');
 }
 
