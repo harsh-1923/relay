@@ -1,9 +1,14 @@
+import { useSearchParams } from 'react-router';
+
 import { Button } from '@/components/ui/button';
-import { signIn } from '@/lib/session';
+import { describeError, signIn } from '@/lib/session';
 import { detectPlatform } from '@relay/sync/platform';
 
-export function SignIn() {
+export function SignIn({ error }: { error?: string }) {
   const desktop = detectPlatform().session === 'bearer';
+  const [params] = useSearchParams();
+  const message = error ?? describeError(params.get('error'));
+
   return (
     <div className="grid min-h-full place-items-center p-6">
       <div className="w-full max-w-sm text-center">
@@ -14,6 +19,11 @@ export function SignIn() {
         <Button className="mt-8 w-full" onClick={signIn}>
           Sign in
         </Button>
+        {message && (
+          <p role="alert" className="text-destructive mt-4 text-sm">
+            {message}
+          </p>
+        )}
         {desktop && (
           <p className="text-muted-foreground mt-4 text-xs leading-relaxed">
             Sign-in opens in your browser, so passkeys and your existing accounts work. Come back

@@ -21,7 +21,7 @@ function App() {
         </>
       ) : (
         <>
-          <Route path="/sign-in" element={<SignIn />} />
+          <Route path="/sign-in" element={<SignIn error={state.error} />} />
           <Route path="*" element={<Navigate to="/sign-in" replace />} />
         </>
       )}

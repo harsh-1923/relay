@@ -22,7 +22,19 @@ export interface Session {
   email: string;
 }
 
+export interface Unsealed {
+  session: Session;
+  /**
+   * Present when the access token had expired and the refresh token inside the seal was used
+   * to mint a new one. The caller MUST hand this back to the surface — Set-Cookie for the
+   * browser, in the JSON body for the desktop bearer — or the next request repeats the
+   * refresh, and the one after that finds a refresh token WorkOS has already rotated away.
+   */
+  refreshed?: string;
+}
+
 export const COOKIE = 'relay_session';
+const OAUTH_COOKIE = 'relay_oauth';
 
 export const workos = (env: Env) =>
   new WorkOS(env.WORKOS_API_KEY, { clientId: env.WORKOS_CLIENT_ID });
@@ -57,31 +69,54 @@ function sealedFrom(request: Request): string | null {
   return cookieValue(request, COOKIE);
 }
 
+const toSession = (r: {
+  user: { id: string; email: string };
+  organizationId?: string;
+  sessionId: string;
+}): Session => ({
+  userId: r.user.id,
+  organizationId: r.organizationId ?? null,
+  sessionId: r.sessionId,
+  email: r.user.email,
+});
+
 /**
  * The ONLY place a session is parsed — cookie or bearer. The shape proxy and the write
  * endpoint both call this; two implementations would drift, and the drift would be an
  * authorization bug.
+ *
+ * Access tokens are short-lived. An expired one is not a sign-out: the seal also carries a
+ * refresh token, and this rotates both and returns the new seal for the caller to persist.
  */
-export async function unsealSession(request: Request, env: Env): Promise<Session | null> {
+export async function unsealSession(request: Request, env: Env): Promise<Unsealed | null> {
   const sealed = sealedFrom(request);
   if (!sealed) return null;
 
+  const um = workos(env).userManagement;
+  const cookiePassword = env.WORKOS_COOKIE_PASSWORD;
+
   try {
-    const r = await workos(env).userManagement.authenticateWithSessionCookie({
-      sessionData: sealed,
-      cookiePassword: env.WORKOS_COOKIE_PASSWORD,
-    });
-    if (!r.authenticated) return null;
-    return {
-      userId: r.user.id,
-      organizationId: r.organizationId ?? null,
-      sessionId: r.sessionId,
-      email: r.user.email,
-    };
+    const loaded = um.loadSealedSession({ sessionData: sealed, cookiePassword });
+    const first = await loaded.authenticate();
+    if (first.authenticated) return { session: toSession(first) };
+    if (first.reason !== 'invalid_jwt') return null;
+
+    const r = await loaded.refresh({ cookiePassword });
+    if (!r.authenticated || !r.sealedSession) return null;
+
+    // Re-read the new seal rather than trusting the refresh response's shape, so a
+    // refreshed session is described by exactly the same code path as a fresh one.
+    const again = await um
+      .loadSealedSession({ sessionData: r.sealedSession, cookiePassword })
+      .authenticate();
+    if (!again.authenticated) return null;
+    return { session: toSession(again), refreshed: r.sealedSession };
   } catch {
     return null;
   }
 }
+
+// ── cookies ───────────────────────────────────────────────────────────────────
 
 export function setSessionCookie(sealed: string, secure: boolean): string {
   const flags = ['HttpOnly', 'SameSite=Lax', 'Path=/', 'Max-Age=604800'];
@@ -90,3 +125,47 @@ export function setSessionCookie(sealed: string, secure: boolean): string {
 }
 
 export const clearSessionCookie = () => `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`;
+
+// ── the OAuth round trip ──────────────────────────────────────────────────────
+
+export type Surface = 'browser' | 'desktop';
+
+export interface OAuthState {
+  state: string;
+  surface: Surface;
+}
+
+const base64url = (bytes: Uint8Array) =>
+  btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+/** CSRF nonce. Random per attempt, held in a short-lived cookie, checked on the way back. */
+export const randomState = () => base64url(crypto.getRandomValues(new Uint8Array(32)));
+
+/**
+ * Lives only for the round trip and only under /auth. The desktop flow runs in the system
+ * browser, and both legs happen there too, so the same cookie protects both surfaces.
+ */
+export function setOAuthCookie(payload: OAuthState, secure: boolean): string {
+  const flags = ['HttpOnly', 'SameSite=Lax', 'Path=/auth', 'Max-Age=600'];
+  if (secure) flags.push('Secure');
+  return `${OAUTH_COOKIE}=${encodeURIComponent(JSON.stringify(payload))}; ${flags.join('; ')}`;
+}
+
+export function readOAuthCookie(request: Request): OAuthState | null {
+  const raw = cookieValue(request, OAUTH_COOKIE);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(decodeURIComponent(raw)) as Partial<OAuthState>;
+    if (typeof parsed.state !== 'string') return null;
+    if (parsed.surface !== 'browser' && parsed.surface !== 'desktop') return null;
+    return { state: parsed.state, surface: parsed.surface };
+  } catch {
+    return null;
+  }
+}
+
+export const clearOAuthCookie = () =>
+  `${OAUTH_COOKIE}=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0`;

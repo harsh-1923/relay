@@ -29,5 +29,7 @@ a live query has a different shape than props.
 
 The client never parses a session. It asks `/auth/session`, which is the only place
 `unsealSession()` runs. On the browser that request carries a cookie; on desktop
-`lib/session.ts` gets a token from the bridge and sends it as a bearer, and re-fetches when
-the shell says the session changed — sign-in completes in another application.
+`lib/session.ts` gets a token from the bridge and sends it as a bearer, hands a refreshed seal
+back to the shell when the server rotates one, and re-fetches when the shell says the session
+changed — sign-in completes in another application, and so do its failures, which land on the
+sign-in screen rather than in a log.

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
 /**
  * The capability bridge. `packages/sync/platform` reads this to decide whether panels exist,
@@ -10,16 +10,18 @@ import { contextBridge, ipcRenderer } from 'electron';
  * additions included — or a bundle cannot express that it requires them.
  */
 contextBridge.exposeInMainWorld('relay', {
-  bridgeVersion: 2,
+  bridgeVersion: 3,
   platform: process.platform,
   auth: {
     /** Opens the system browser. The result arrives later, via `onChange`. */
     signIn: (): Promise<void> => ipcRenderer.invoke('auth:sign-in'),
     /** The sealed session to send as a bearer, or null when signed out. */
     token: (): Promise<string | null> => ipcRenderer.invoke('auth:token'),
+    /** Persist a seal the server rotated. */
+    store: (sealed: string): Promise<void> => ipcRenderer.invoke('auth:store', sealed),
     signOut: (): Promise<void> => ipcRenderer.invoke('auth:sign-out'),
-    onChange: (cb: () => void): (() => void) => {
-      const handler = () => cb();
+    onChange: (cb: (change: { error?: string }) => void): (() => void) => {
+      const handler = (_e: IpcRendererEvent, change: { error?: string }) => cb(change ?? {});
       ipcRenderer.on('auth:changed', handler);
       return () => ipcRenderer.off('auth:changed', handler);
     },

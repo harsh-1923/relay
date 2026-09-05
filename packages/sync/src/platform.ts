@@ -22,8 +22,10 @@ export interface RelayBridge {
     /** Opens the system browser; the result arrives later through `onChange`. */
     signIn(): Promise<void>;
     token(): Promise<string | null>;
+    /** Persist a seal the server rotated on an expired access token. */
+    store(sealed: string): Promise<void>;
     signOut(): Promise<void>;
-    onChange(cb: () => void): () => void;
+    onChange(cb: (change: { error?: string }) => void): () => void;
   };
 }
 

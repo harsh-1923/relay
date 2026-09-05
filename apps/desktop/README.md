@@ -45,14 +45,24 @@ WorkOS never sees `relay://`; the redirect URI stays the client's. The code on t
 is single-use and the exchange still needs the server's API key, so it is not a session.
 The renderer never touches the stored file — it asks the bridge for a token.
 
-**Not yet PKCE.** A native app should bind the code to the party that will redeem it. The
-verifier has to be minted by the shell and its challenge carried through the server's
-authorize URL, which is more plumbing than this first pass. Until then the window is small:
-single-use code, short expiry, exchange gated on the API key.
+**PKCE binds the code to this shell.** `main/pkce.ts` mints a verifier per sign-in and sends
+only its S256 challenge with the authorize request. The code WorkOS hands back can be redeemed
+by nothing else — a hijacked `relay://` link gets a code it cannot use, and a link arriving
+with no sign-in in flight is dropped before any network call.
+
+**Expired access tokens are not a sign-out.** The server refreshes them from the token inside
+the seal and returns the new seal in the `/auth/session` body; the renderer hands it back over
+`auth.store()` so the next request carries it. Without that hand-back the next request would
+repeat the refresh against a refresh token WorkOS has already rotated away.
+
+**Failures reach the user.** Every way the round trip can go wrong — no code, no sign-in in
+progress, exchange refused, server unreachable — is sent to the renderer through
+`auth.onChange({ error })` and shown on the sign-in screen, not left in a log.
 
 Test the plumbing without a real login: with the shell running,
-`open "relay://auth/callback?code=probe"` should log `exchange failed: 401` — the link
-reached main, main reached the server, the server reached WorkOS.
+`open "relay://auth/callback?code=probe"` with no sign-in in progress should do nothing
+visible to the network and show "No sign-in was in progress" in the app — the link reached
+main and was dropped at the verifier gate.
 
 ## `bridgeVersion`
 

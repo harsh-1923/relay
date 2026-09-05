@@ -13,7 +13,7 @@ const UI_URL = process.env.RELAY_UI_URL ?? 'http://localhost:5173';
 
 let mainWindow: BrowserWindow | null = null;
 registerProtocol();
-installAuth(UI_URL, () => mainWindow);
+installAuth(UI_URL, () => mainWindow, createWindow);
 
 /** Blocked outright. The desktop app sits inside the user's network, so an internal URL is a
  *  genuine pivot, not a broken link (H10). */
@@ -35,7 +35,7 @@ function isNavigable(raw: string | undefined): boolean {
   return true;
 }
 
-function createWindow() {
+function createWindow(): BrowserWindow {
   const window = (mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -90,6 +90,7 @@ function createWindow() {
   load();
 
   if (!app.isPackaged) window.webContents.openDevTools({ mode: 'detach' });
+  return window;
 }
 
 void app.whenReady().then(() => {

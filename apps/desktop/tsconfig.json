@@ -9,5 +9,5 @@
     // rather than preserved.
     "verbatimModuleSyntax": false
   },
-  "include": ["main", "preload"]
+  "include": ["main", "preload", "test"]
 }
