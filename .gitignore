@@ -22,3 +22,8 @@ coverage/
 
 # wrangler build artefacts and local state
 .wrangler/
+
+# Agent skills. `.agents/skills` and skills-lock.json are committed so a clone gets the
+# same skills at the same revision; `.claude/skills` is only per-tool symlinks into it,
+# recreated by `npx skills add`.
+.claude/

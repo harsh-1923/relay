@@ -9,3 +9,7 @@ pnpm-lock.yaml
 # the snapshots are what `generate` diffs against.
 supabase/migrations/
 .wrangler/
+
+# Vendored by `npx skills add`. Upstream's formatting — reformatting it would make every
+# skill update a noisy diff.
+.agents/skills/
