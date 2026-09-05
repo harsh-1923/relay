@@ -4,8 +4,18 @@ A multiplayer agent workspace: Slack-shaped rooms where people and agents work t
 an Electron desktop app with a webview panel so a room can watch an agent act on a live page.
 Local-first, with a browser surface planned.
 
-Phase 0 is in progress: the monorepo, `packages/schema` with the tenancy tables, the local
-Postgres, and `pnpm run up`. No application code yet — every app is a stub.
+**Phase 0 is built.** Workspace, `packages/schema` (Drizzle → generated migrations), five
+tenancy tables, local Postgres, and `pnpm run up` / `pnpm health`. **Phase 1 has started:** the
+AuthKit round trip works in `apps/server`; the webhook handlers and the signup path do not
+exist, so Postgres is empty by design.
+
+```
+pnpm run up      infrastructure          pnpm health        is it actually working
+pnpm dev         apps (:8787)            pnpm services:stop tear down
+```
+
+WorkOS is the one dependency that is not local — point `.env` at an environment that never
+serves production traffic.
 
 ## Where the context lives
 
