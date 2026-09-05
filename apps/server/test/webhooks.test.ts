@@ -7,6 +7,11 @@ import { db } from '../src/db';
 import { applyEvent, type Env } from '../src/webhooks/workos';
 
 /**
+ * Payloads here are the shape `constructEvent` actually produces — camelCase, captured from
+ * a delivered event. An earlier version of these tests invented snake_case fields and passed
+ * against a handler that read the same wrong names, so every user's name silently mirrored
+ * as null. Keep these aligned with observed payloads, not with the REST API's field names.
+ *
  * Runs against the local Postgres from `pnpm run up`. WorkOS cannot deliver to localhost, so
  * this is what proves the mirror writes are correct without a tunnel.
  *
@@ -34,7 +39,7 @@ afterAll(cleanup);
 describe('workos webhook → postgres mirror', () => {
   it('creates a user', async () => {
     await applyEvent(
-      { event: 'user.created', data: { id: USER, email: 'probe@relay.test', first_name: 'Probe' } },
+      { event: 'user.created', data: { id: USER, email: 'probe@relay.test', firstName: 'Probe' } },
       env,
     );
     const [row] = await d.select().from(users).where(eq(users.id, USER));
@@ -45,7 +50,7 @@ describe('workos webhook → postgres mirror', () => {
   it('is idempotent — WorkOS retries, and events arrive out of order', async () => {
     const event = {
       event: 'user.created',
-      data: { id: USER, email: 'probe@relay.test', first_name: 'Probe' },
+      data: { id: USER, email: 'probe@relay.test', firstName: 'Probe' },
     };
     await applyEvent(event, env);
     await applyEvent(event, env);
@@ -55,7 +60,7 @@ describe('workos webhook → postgres mirror', () => {
 
   it('updates in place rather than duplicating', async () => {
     await applyEvent(
-      { event: 'user.updated', data: { id: USER, email: 'renamed@relay.test', last_name: 'Two' } },
+      { event: 'user.updated', data: { id: USER, email: 'renamed@relay.test', lastName: 'Two' } },
       env,
     );
     const [row] = await d.select().from(users).where(eq(users.id, USER));
@@ -70,8 +75,8 @@ describe('workos webhook → postgres mirror', () => {
         event: 'organization_membership.created',
         data: {
           id: MEMBERSHIP,
-          user_id: USER,
-          organization_id: ORG,
+          userId: USER,
+          organizationId: ORG,
           status: 'active',
           role: { slug: 'admin' },
         },

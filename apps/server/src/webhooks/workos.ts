@@ -44,6 +44,17 @@ export async function handleWorkosWebhook(request: Request, env: Env): Promise<R
   return new Response(null, { status: 200 });
 }
 
+/**
+ * `constructEvent` deserialises the payload, so fields arrive **camelCase** — `firstName`,
+ * not `first_name`. Observed directly from a delivered `user.updated`:
+ *
+ *   ["object","id","email","emailVerified","name","firstName","profilePictureUrl",
+ *    "lastName","lastSignInAt","locale","createdAt","updatedAt","externalId","metadata"]
+ *
+ * The first version of this file read snake_case and silently wrote nulls for every name.
+ * The tests passed, because they asserted the same wrong shape. Only real delivery caught
+ * it — which is why the fixtures below are the observed payload, not an invented one.
+ */
 export async function applyEvent(event: WorkosEvent, env: Env): Promise<void> {
   const d = db(env);
 
@@ -53,16 +64,16 @@ export async function applyEvent(event: WorkosEvent, env: Env): Promise<void> {
       const u = event.data as {
         id: string;
         email: string;
-        first_name?: string | null;
-        last_name?: string | null;
-        profile_picture_url?: string | null;
+        firstName?: string | null;
+        lastName?: string | null;
+        profilePictureUrl?: string | null;
       };
       const row = {
         id: u.id,
         email: u.email,
-        firstName: u.first_name ?? null,
-        lastName: u.last_name ?? null,
-        profilePic: u.profile_picture_url ?? null,
+        firstName: u.firstName ?? null,
+        lastName: u.lastName ?? null,
+        profilePic: u.profilePictureUrl ?? null,
         updatedAt: new Date(),
       };
       await d.insert(users).values(row).onConflictDoUpdate({ target: users.id, set: row });
@@ -92,15 +103,15 @@ export async function applyEvent(event: WorkosEvent, env: Env): Promise<void> {
     case 'organization_membership.updated': {
       const m = event.data as {
         id: string;
-        user_id: string;
-        organization_id: string;
+        userId: string;
+        organizationId: string;
         status: string;
         role?: { slug?: string };
       };
       const row = {
         id: m.id,
-        userId: m.user_id,
-        organizationId: m.organization_id,
+        userId: m.userId,
+        organizationId: m.organizationId,
         roles: [m.role?.slug ?? 'member'],
         status: m.status,
         updatedAt: new Date(),
