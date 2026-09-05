@@ -242,6 +242,59 @@ if (!base) {
       }
     }
 
+    // Webhooks are how the Postgres mirror stays in step with WorkOS. An endpoint that has
+    // been disabled, or whose tunnel has died, fails silently — delivery just stops and the
+    // mirror drifts with nothing to notice it.
+    const endpoints = await workosGet(base, server.WORKOS_API_KEY, '/webhook_endpoints');
+    if (endpoints.ok) {
+      const eps = endpoints.body.data ?? [];
+      if (!eps.length) {
+        meh(
+          'no webhook endpoint registered',
+          'The mirror will never populate. Needs a publicly reachable URL — a tunnel locally,\n' +
+            '      or a deployed worker.',
+        );
+      } else {
+        for (const ep of eps) {
+          const host = ep.endpoint_url.replace(/^https?:\/\//, '').split('/')[0];
+          if (ep.status !== 'enabled') {
+            bad(
+              `webhook endpoint is ${ep.status} (${host})`,
+              'WorkOS disables an endpoint after sustained delivery failure. Re-enable it, or\n' +
+                '      delete it and register the current URL.',
+            );
+            continue;
+          }
+          if (!server.WORKOS_WEBHOOK_SECRET || server.WORKOS_WEBHOOK_SECRET === 'set-me') {
+            bad(
+              'webhook endpoint exists but WORKOS_WEBHOOK_SECRET is unset',
+              'Every delivery will be rejected as unsigned.',
+            );
+            continue;
+          }
+          // A 400 is the right answer: it reached our handler, which refused an unsigned POST.
+          let reachable;
+          try {
+            const r = await fetch(ep.endpoint_url, {
+              method: 'POST',
+              body: '{}',
+              signal: AbortSignal.timeout(8000),
+            });
+            reachable = r.status !== 404 && r.status < 500;
+          } catch {
+            reachable = false;
+          }
+          if (reachable) ok(`webhook endpoint enabled and reachable (${host})`);
+          else
+            meh(
+              `webhook endpoint enabled but ${host} is not answering`,
+              'Normal if the tunnel is stopped — auth still works, but the mirror will drift.\n' +
+                '      Restart the tunnel and update the endpoint URL, or delete the endpoint.',
+            );
+        }
+      }
+    }
+
     const users = await workosGet(base, server.WORKOS_API_KEY, '/user_management/users?limit=50');
     const remoteOrgs = orgs.body.data.map((o) => o.id);
     const remoteUsers = users.ok ? users.body.data.map((u) => u.id) : [];
