@@ -4,13 +4,14 @@
  * `apps/client` builds once and ships twice — deployed as the browser surface, and zipped
  * into the desktop UI bundle. What differs between them is answered here at runtime, never
  * by an `if (isElectron)` at a call site.
+ *
+ * `panels`: Electron only. The browser resolves this to a clear, explained state.
+ * `persistence`: SQLite via the preload bridge, or IndexedDB. Decides which persister is used.
+ * `session`: Desktop is cross-origin to the API and carries a bearer token; the browser has a cookie.
  */
 export interface Platform {
-  /** Electron only. The browser resolves this to a clear, explained state. */
   panels: boolean;
-  /** SQLite via the preload bridge, or IndexedDB. Decides which persister is used. */
   persistence: 'sqlite' | 'indexeddb';
-  /** Desktop is cross-origin to the API and carries a bearer token; the browser has a cookie. */
   session: 'cookie' | 'bearer';
 }
 
@@ -18,15 +19,24 @@ export interface Platform {
 export interface RelayBridge {
   bridgeVersion: number;
   platform: string;
+  /**
+   * `signIn`: opens the system browser; the result arrives later through `onChange`.
+   * `cancelSignIn`: forget an in-flight sign-in, so its code can no longer be redeemed.
+   * `store`: persist a seal the server rotated on an expired access token.
+   * `accounts`: every signed-in account. One email is one account: WorkOS keys identity on
+   *   email, and the two are never linked server-side — linking would be a path around an
+   *   enterprise's SSO enforcement. Desktop only; a browser has one cookie and therefore one
+   *   session.
+   * `signOut`: signs out one account, or the active one. The others stay signed in.
+   */
   auth: {
-    /** Opens the system browser; the result arrives later through `onChange`. */
     signIn(): Promise<void>;
-    /** Forget an in-flight sign-in, so its code can no longer be redeemed. */
     cancelSignIn(): Promise<void>;
     token(): Promise<string | null>;
-    /** Persist a seal the server rotated on an expired access token. */
     store(sealed: string): Promise<void>;
-    signOut(): Promise<void>;
+    accounts(): Promise<Array<{ userId: string; email: string; active: boolean }>>;
+    switchAccount(userId: string): Promise<void>;
+    signOut(userId?: string): Promise<void>;
     onChange(cb: (change: { error?: string }) => void): () => void;
   };
 }

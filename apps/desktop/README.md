@@ -11,6 +11,10 @@ pnpm dev:desktop     # from the repo root — server, client and shell together
 Electron over Tauri because the panel _is_ the product: Tauri uses the system webview, so an
 embedded Notion or Google Doc would render in a different engine per platform.
 
+DevTools does **not** open on launch. Electron's stock menu binds Toggle Developer Tools
+(`Cmd+Opt+I` / `Ctrl+Shift+I`), and `RELAY_DEVTOOLS=1` opens it on launch when that is what
+you want.
+
 ## Webviews are hardened in one place
 
 `will-attach-webview` is the choke point. Every `<webview>` that will ever exist passes

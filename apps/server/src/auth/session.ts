@@ -22,14 +22,14 @@ export interface Session {
   email: string;
 }
 
+/**
+ * `refreshed` is present when the access token had expired and the refresh token inside the
+ * seal was used to mint a new one. The caller MUST hand this back to the surface — Set-Cookie
+ * for the browser, in the JSON body for the desktop bearer — or the next request repeats the
+ * refresh, and the one after that finds a refresh token WorkOS has already rotated away.
+ */
 export interface Unsealed {
   session: Session;
-  /**
-   * Present when the access token had expired and the refresh token inside the seal was used
-   * to mint a new one. The caller MUST hand this back to the surface — Set-Cookie for the
-   * browser, in the JSON body for the desktop bearer — or the next request repeats the
-   * refresh, and the one after that finds a refresh token WorkOS has already rotated away.
-   */
   refreshed?: string;
 }
 
@@ -111,6 +111,46 @@ export async function unsealSession(request: Request, env: Env): Promise<Unseale
       .authenticate();
     if (!again.authenticated) return null;
     return { session: toSession(again), refreshed: r.sealedSession };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Moves an existing session into an organization, or refreshes it in place.
+ *
+ * Used twice: once at signup, for the org just created, and again by the org switcher. Both
+ * need the same thing — a new seal carrying the target `organization_id` — and both must
+ * hand it back to whichever surface holds the session.
+ *
+ * Returns null when the target rejects the refresh, which is the SSO case: an org that
+ * enforces an IdP will not accept a session established by another method, and the caller
+ * must fall back to a full round trip through `/auth/login?organization_id=…`.
+ */
+export async function reissueForOrganization(
+  request: Request,
+  env: Env,
+  organizationId: string,
+): Promise<{ session: Session; sealed: string } | null> {
+  const sealed = sealedFrom(request);
+  if (!sealed) return null;
+
+  const um = workos(env).userManagement;
+  const cookiePassword = env.WORKOS_COOKIE_PASSWORD;
+
+  try {
+    const r = await um
+      .loadSealedSession({ sessionData: sealed, cookiePassword })
+      .refresh({ cookiePassword, organizationId });
+    if (!r.authenticated || !r.sealedSession) return null;
+
+    // Re-read the new seal rather than trusting the refresh response's shape, so a
+    // re-issued session is described by exactly the same code path as any other.
+    const again = await um
+      .loadSealedSession({ sessionData: r.sealedSession, cookiePassword })
+      .authenticate();
+    if (!again.authenticated) return null;
+    return { session: toSession(again), sealed: r.sealedSession };
   } catch {
     return null;
   }

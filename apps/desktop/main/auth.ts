@@ -1,7 +1,7 @@
-import { app, ipcMain, safeStorage, shell, type BrowserWindow } from 'electron';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { app, ipcMain, shell, type BrowserWindow } from 'electron';
 import { join } from 'node:path';
 
+import * as accounts from './accounts';
 import { challengeFor, newVerifier } from './pkce';
 
 /**
@@ -18,19 +18,6 @@ import { challengeFor, newVerifier } from './pkce';
  */
 
 const PROTOCOL = 'relay';
-const SESSION_FILE = () => join(app.getPath('userData'), 'session');
-
-export function readSession(): string | null {
-  try {
-    return safeStorage.decryptString(readFileSync(SESSION_FILE()));
-  } catch {
-    return null;
-  }
-}
-
-const writeSession = (sealed: string) =>
-  writeFileSync(SESSION_FILE(), safeStorage.encryptString(sealed));
-const clearSession = () => rmSync(SESSION_FILE(), { force: true });
 
 /**
  * Registers the protocol and wires the deep-link entry points. Call before `app.whenReady`.
@@ -52,11 +39,16 @@ export interface AuthChange {
   error?: string;
 }
 
+export const readSession = accounts.activeSeal;
+
 export function installAuth(
   uiUrl: string,
   window: () => BrowserWindow | null,
   ensureWindow: () => BrowserWindow,
 ) {
+  // A shell that stored one seal may be upgrading into this one.
+  void accounts.migrateLegacy(uiUrl);
+
   /** Set when a sign-in is in flight; the only thing that can redeem the code that follows. */
   let pendingVerifier: string | null = null;
 
@@ -97,8 +89,12 @@ export function installAuth(
         console.error(`[relay] exchange failed: ${r.status} ${detail ?? ''}`);
         return notify({ error: 'Sign-in could not be completed. Try again.' });
       }
-      const { sealedSession } = (await r.json()) as { sealedSession: string };
-      writeSession(sealedSession);
+      const { sealedSession, user } = (await r.json()) as {
+        sealedSession: string;
+        user: { id: string; email: string };
+      };
+      // Adds rather than replaces: signing in as a second email leaves the first signed in.
+      accounts.upsert({ userId: user.id, email: user.email, sealed: sealedSession });
       notify();
     } catch (e) {
       console.error('[relay] exchange failed:', e);
@@ -132,16 +128,32 @@ export function installAuth(
   ipcMain.handle('auth:cancel', () => {
     pendingVerifier = null;
   });
-  ipcMain.handle('auth:token', () => readSession());
+  ipcMain.handle('auth:token', () => accounts.activeSeal());
   // The server rotates an expired access token and hands the renderer a new seal.
   ipcMain.handle('auth:store', (_event, sealed: unknown) => {
-    if (typeof sealed === 'string' && sealed) writeSession(sealed);
+    if (typeof sealed === 'string' && sealed) accounts.updateActiveSeal(sealed);
   });
-  ipcMain.handle('auth:sign-out', async () => {
-    const sealed = readSession();
-    clearSession();
-    if (sealed) {
-      await fetch(`${uiUrl}/auth/logout`, { headers: { Authorization: `Bearer ${sealed}` } }).catch(
+
+  ipcMain.handle('auth:accounts', () => accounts.list());
+
+  ipcMain.handle('auth:switch-account', (_event, userId: unknown) => {
+    if (typeof userId === 'string' && accounts.setActive(userId)) notify();
+  });
+
+  /**
+   * Signs out one account and leaves the others. Revoking upstream uses that account's own
+   * seal, not the active one — signing out of a background account must not end the session
+   * you are looking at.
+   */
+  ipcMain.handle('auth:sign-out', async (_event, userId?: unknown) => {
+    const all = accounts.list();
+    const target = typeof userId === 'string' ? userId : all.find((a) => a.active)?.userId;
+    if (!target) return;
+
+    const seal = accounts.sealFor(target);
+    accounts.remove(target);
+    if (seal) {
+      await fetch(`${uiUrl}/auth/logout`, { headers: { Authorization: `Bearer ${seal}` } }).catch(
         () => undefined,
       );
     }

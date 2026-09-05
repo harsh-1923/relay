@@ -59,6 +59,8 @@ const EVENTS = [
   'organization.created',
   'organization.updated',
   'organization.deleted',
+  // Acceptance surfaces as a membership event — that is where an invitee becomes a member of
+  // the default workspace, or a guest of specific rooms.
   'organization_membership.created',
   'organization_membership.updated',
   'organization_membership.deleted',

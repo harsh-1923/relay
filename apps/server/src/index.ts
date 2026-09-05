@@ -1,16 +1,32 @@
 import { handoff } from './auth/handoff';
 import {
+  canInvite,
+  pendingInvitations,
+  revokeInvitation,
+  sendInvitation,
+  INVITABLE_ROLES,
+  type InvitableRole,
+} from './auth/invitations';
+import { createOrganizationForUser } from './auth/signup';
+import {
   clearOAuthCookie,
   clearSessionCookie,
   randomState,
   readOAuthCookie,
   redirectUri,
+  reissueForOrganization,
   setOAuthCookie,
   setSessionCookie,
   unsealSession,
   workos,
 } from './auth/session';
-import { handleWorkosWebhook, type Env } from './webhooks/workos';
+import type { Env as InvitationEnv } from './auth/invitations';
+import type { Env as SignupEnv } from './auth/signup';
+import { db } from './db';
+import { isMemberOf, switchTargets } from './tenancy';
+import { handleWorkosWebhook, type Env as WebhookEnv } from './webhooks/workos';
+
+type Env = WebhookEnv & SignupEnv & InvitationEnv;
 
 const withCookies = (headers: Record<string, string>, cookies: string[]) => {
   const h = new Headers(headers);
@@ -54,6 +70,13 @@ export default {
         const challenge = url.searchParams.get('challenge');
         if (desktop && !challenge) return json({ error: 'missing_challenge' }, 400);
 
+        // Set when the org switcher's refresh was rejected: the target enforces SSO, so the
+        // user must be sent through that org's IdP rather than refreshed into it.
+        const organizationId = url.searchParams.get('organization_id') ?? undefined;
+        // Carried from the emailed accept link. AuthKit accepts the invitation as part of
+        // sign-in, which is what makes the invitee an org member without a second step.
+        const invitationToken = url.searchParams.get('invitation_token') ?? undefined;
+
         const state = randomState();
         // Two concrete calls rather than a conditional spread: the SDK types PKCE as a union
         // arm where challenge and method must be present together, not individually optional.
@@ -62,6 +85,8 @@ export default {
           clientId: env.WORKOS_CLIENT_ID,
           redirectUri: redirectUri(request),
           state,
+          ...(organizationId ? { organizationId } : {}),
+          ...(invitationToken ? { invitationToken } : {}),
         };
         const location =
           desktop && challenge
@@ -119,13 +144,17 @@ export default {
         };
         if (!body.code || !body.verifier) return json({ error: 'missing_code_or_verifier' }, 400);
         try {
-          const { sealedSession } = await um.authenticateWithCode({
+          const { sealedSession, user } = await um.authenticateWithCode({
             code: body.code,
             codeVerifier: body.verifier,
             clientId: env.WORKOS_CLIENT_ID,
             session: { sealSession: true, cookiePassword: env.WORKOS_COOKIE_PASSWORD },
           });
-          return sealedSession ? json({ sealedSession }) : json({ error: 'no_session' }, 502);
+          // The shell files seals by user, and a seal is opaque to it — only the server can
+          // say who this one belongs to.
+          return sealedSession
+            ? json({ sealedSession, user: { id: user.id, email: user.email } })
+            : json({ error: 'no_session' }, 502);
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : 'exchange_failed' }, 401);
         }
@@ -137,10 +166,175 @@ export default {
       case '/auth/session': {
         const u = await unsealSession(request, env);
         if (!u) return json({ error: 'unauthenticated' }, 401);
-        if (!u.refreshed) return json(u.session);
+        // Roles come from the mirror rather than the seal: WorkOS puts them in the access
+        // token too, but a role change would then only appear on the next refresh.
+        const session = {
+          ...u.session,
+          canInvite: u.session.organizationId
+            ? await canInvite(env, u.session.userId, u.session.organizationId)
+            : false,
+        };
+        if (!u.refreshed) return json(session);
         if (request.headers.get('Authorization'))
           return json({ ...u.session, refreshedSession: u.refreshed });
         return json(u.session, 200, [setSessionCookie(u.refreshed, secure)]);
+      }
+
+      /**
+       * Creates the org and its default workspace, then re-issues the session into it — the
+       * caller's current session has `organization_id: null` and nothing else would change
+       * that. The new seal goes back the way `/auth/session` returns a refreshed one.
+       */
+      case '/auth/signup': {
+        if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+
+        const current = await unsealSession(request, env);
+        if (!current) return json({ error: 'unauthenticated' }, 401);
+
+        const { name } = (await request.json().catch(() => ({}))) as { name?: string };
+        if (!name?.trim()) return json({ error: 'name_required' }, 400);
+
+        try {
+          const { organization, workspace } = await createOrganizationForUser(env, {
+            userId: current.session.userId,
+            name: name.trim(),
+          });
+
+          const reissued = await reissueForOrganization(request, env, organization.id);
+          if (!reissued) {
+            // The org exists and is usable; only the session did not move. Signing in again
+            // picks it up, so say so rather than implying the workspace was not created.
+            return json(
+              { error: 'created_but_session_stale', organizationId: organization.id },
+              202,
+            );
+          }
+
+          const body = {
+            ...reissued.session,
+            workspace: { id: workspace.id, name: workspace.name, slug: workspace.slug },
+          };
+          if (request.headers.get('Authorization')) {
+            return json({ ...body, refreshedSession: reissued.sealed });
+          }
+          return json(body, 200, [setSessionCookie(reissued.sealed, secure)]);
+        } catch (e) {
+          return json({ error: e instanceof Error ? e.message : 'signup_failed' }, 502);
+        }
+      }
+
+      /**
+       * Every org this user can switch into, labelled by its default workspace. One row per
+       * org membership; the UI never says "organization".
+       */
+      case '/auth/workspaces': {
+        const u = await unsealSession(request, env);
+        if (!u) return json({ error: 'unauthenticated' }, 401);
+        const targets = await switchTargets(db(env), u.session.userId);
+        const body = { current: u.session.organizationId, workspaces: targets };
+        if (!u.refreshed) return json(body);
+        if (request.headers.get('Authorization'))
+          return json({ ...body, refreshedSession: u.refreshed });
+        return json(body, 200, [setSessionCookie(u.refreshed, secure)]);
+      }
+
+      /**
+       * Moves the session into another org. Switching re-issues rather than editing a claim,
+       * because the target org's authentication requirements may differ from the current
+       * session's — an org enforcing SSO will reject a session established by password, and
+       * the only way in is a fresh round trip through its IdP.
+       */
+      case '/auth/switch': {
+        if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+
+        const u = await unsealSession(request, env);
+        if (!u) return json({ error: 'unauthenticated' }, 401);
+
+        const { organizationId } = (await request.json().catch(() => ({}))) as {
+          organizationId?: string;
+        };
+        if (!organizationId) return json({ error: 'organization_required' }, 400);
+
+        // Checked against our mirror, not WorkOS: same data, already local, and this must
+        // not become a network round trip on a menu click.
+        if (!(await isMemberOf(db(env), u.session.userId, organizationId))) {
+          return json({ error: 'not_a_member' }, 403);
+        }
+
+        const reissued = await reissueForOrganization(request, env, organizationId);
+        if (!reissued) {
+          // Not an error: the org wants a stronger authentication than this session has.
+          return json(
+            { reauth: `/auth/login?organization_id=${encodeURIComponent(organizationId)}` },
+            409,
+          );
+        }
+
+        if (request.headers.get('Authorization')) {
+          return json({ ...reissued.session, refreshedSession: reissued.sealed });
+        }
+        return json(reissued.session, 200, [setSessionCookie(reissued.sealed, secure)]);
+      }
+
+      /**
+       * Invitations to this session's organization.
+       *
+       * WorkOS owns the invitation and sends the mail. What lands where is decided on
+       * acceptance, by the role on the invitation, in the webhook handler.
+       */
+      case '/auth/invitations': {
+        const u = await unsealSession(request, env);
+        if (!u) return json({ error: 'unauthenticated' }, 401);
+
+        const organizationId = u.session.organizationId;
+        if (!organizationId) return json({ error: 'no_organization' }, 400);
+
+        if (request.method === 'GET') {
+          return json({ invitations: await pendingInvitations(env, organizationId) });
+        }
+
+        if (request.method === 'POST') {
+          // Only someone who runs the org may add to it.
+          if (!(await canInvite(env, u.session.userId, organizationId))) {
+            return json({ error: 'forbidden' }, 403);
+          }
+
+          const body = (await request.json().catch(() => ({}))) as {
+            email?: string;
+            role?: string;
+          };
+          const email = body.email?.trim();
+          if (!email) return json({ error: 'email_required' }, 400);
+
+          const role = (body.role ?? 'member') as InvitableRole;
+          if (!INVITABLE_ROLES.includes(role)) return json({ error: 'invalid_role' }, 400);
+
+          try {
+            return json(
+              await sendInvitation(env, {
+                email,
+                organizationId,
+                inviterUserId: u.session.userId,
+                role,
+              }),
+              201,
+            );
+          } catch (e) {
+            return json({ error: e instanceof Error ? e.message : 'invite_failed' }, 502);
+          }
+        }
+
+        if (request.method === 'DELETE') {
+          if (!(await canInvite(env, u.session.userId, organizationId))) {
+            return json({ error: 'forbidden' }, 403);
+          }
+          const { id } = (await request.json().catch(() => ({}))) as { id?: string };
+          if (!id) return json({ error: 'id_required' }, 400);
+          await revokeInvitation(env, id);
+          return new Response(null, { status: 204 });
+        }
+
+        return json({ error: 'method_not_allowed' }, 405);
       }
 
       case '/auth/logout': {

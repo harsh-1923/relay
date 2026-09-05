@@ -1,5 +1,8 @@
 import { Button } from '@/components/ui/button';
-import type { Session } from '@/lib/session';
+import type { Account, Session, SwitchTarget } from '@/lib/session';
+import { Invite } from '@/routes/invite';
+import { WorkspaceMenu } from '@/routes/workspace-menu';
+import { useMutation } from '@tanstack/react-query';
 import { detectPlatform } from '@relay/sync/platform';
 
 const Row = ({ label, value }: { label: string; value: string }) => (
@@ -9,7 +12,32 @@ const Row = ({ label, value }: { label: string; value: string }) => (
   </div>
 );
 
-export function Home({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
+export function Home({
+  session,
+  onSignOut,
+  workspaces,
+  onSwitch,
+  accounts,
+  onSwitchAccount,
+  onAddAccount,
+}: {
+  session: Session;
+  onSignOut: () => void;
+  workspaces: SwitchTarget[];
+  onSwitch: (organizationId: string) => Promise<string | null>;
+  accounts: Account[];
+  onSwitchAccount: (userId: string) => void;
+  onAddAccount: () => void;
+}) {
+  // The mutation carries which org is in flight, so the menu can show it without a second
+  // piece of state tracking the same thing.
+  const swap = useMutation({
+    mutationFn: async (organizationId: string) => {
+      const error = await onSwitch(organizationId);
+      if (error) throw new Error(error);
+    },
+  });
+
   const platform = detectPlatform();
 
   return (
@@ -29,6 +57,24 @@ export function Home({ session, onSignOut }: { session: Session; onSignOut: () =
             No organization yet. The signup path that creates one — org, membership, default
             workspace, room — is the next thing to build, and until it exists nothing scopes this
             user to a tenant.
+          </p>
+        )}
+
+        <Invite canInvite={session.canInvite ?? false} />
+
+        <WorkspaceMenu
+          workspaces={workspaces}
+          current={session.organizationId}
+          busy={swap.isPending ? swap.variables : null}
+          onSwitch={(organizationId) => swap.mutate(organizationId)}
+          accounts={accounts}
+          onSwitchAccount={onSwitchAccount}
+          onAddAccount={onAddAccount}
+        />
+
+        {swap.isError && (
+          <p role="alert" className="text-destructive mt-4 text-sm">
+            {swap.error.message}
           </p>
         )}
 

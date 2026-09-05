@@ -379,8 +379,25 @@ create org (name)
   → org membership (roles: ['owner'])
   → default workspace (same name, is_default true)
   → workspace membership (role: 'admin')
-  → room "general"
 ```
+
+**It stops at the workspace.** Earlier drafts ended with a room called "general". Nothing in
+Phase 1 reads a room, the exit criterion does not mention one, and the room schema is still
+moving with product decisions — so building against it now means building it twice. Adding an
+insert here later costs a backfill of the orgs created in between.
+
+**Signup writes the org and membership mirror rows itself**, from the API response, using the
+same idempotent upsert the webhook uses. `workspaces.organization_id` is a foreign key into a
+webhook-populated table and the webhook arrives seconds later, or — locally, without a tunnel
+— never. This is not a second source of truth: the response _is_ WorkOS's data, keyed on
+WorkOS's id, and the webhook that follows finds the row and changes nothing.
+
+**Creating an organization is not idempotent, and the SDK's `idempotencyKey` does not make it
+so** — it guards only that call's own internal retry. Verified against the live API: two
+requests carrying the same `Idempotency-Key` produced two organizations. Signup therefore
+serialises per user with a Postgres advisory lock and re-checks the user's memberships before
+creating. The lock is held across a network call, which is worth it because nothing in the
+product can merge duplicate organizations.
 
 ### Role model
 
@@ -398,14 +415,62 @@ combined-role explosion.
 B" is not representable in an org membership, and neither are workspace invitations. Storing the
 role locally is fine at launch; FGA later replaces the _evaluation_, not the storage.
 
-**What triggers the FGA phase:** guests. Slack has single-channel and multi-channel guests, and a
-guest in one room but not the workspace breaks a simple membership check. That is the signal.
+### What each org role means
+
+The slugs alone invite reinvention later, so:
+
+| Role     | Means                                                                                               |
+| -------- | --------------------------------------------------------------------------------------------------- |
+| `owner`  | Created the org. The only role that may delete it or transfer ownership                             |
+| `admin`  | Manages members and settings, but cannot end the org                                                |
+| `member` | Normal. Belongs to a workspace and sees its rooms                                                   |
+| `guest`  | **Sees only rooms they were explicitly added to — not public rooms, not the workspace's room list** |
+
+Permissions are left empty on all four. Nothing reads a permission yet — authorization is
+membership in Postgres — so adding them before something checks one would be inventing a
+vocabulary blind.
+
+### Guests are a union, not a graph — FGA is not their trigger
+
+> **Amends the earlier claim** that guests trigger the FGA phase. They do not, and the
+> reasoning that follows is why. Per-event trace visibility does.
+
+A guest is invited to specific rooms and not to the workspace. That looks like it breaks the
+membership check, and it would — except that **a guest still holds an org membership**, which
+they get for free because WorkOS invites to the _organization_; it has no lower level.
+
+| Table                      | Guest                 | Member           |
+| -------------------------- | --------------------- | ---------------- |
+| `organization_memberships` | ✅ role `guest`       | ✅ role `member` |
+| `workspace_memberships`    | ❌ none               | ✅               |
+| `room_members`             | ✅ invited rooms only | ✅               |
+
+That org membership is what keeps everything intact: the session is
+`{user_id, organization_id}` and every tenant table is scoped by `organization_id`. A guest
+has both. Room authorisation then reads `room_members(room_id, user_id)` — a primary-key
+lookup, no join, invariant 2 satisfied. A guest passes it; a workspace shape reads
+`workspace_memberships` and a guest correctly fails it.
+
+What changes is only the rule that assumed _workspace member ⇒ sees the workspace's rooms_:
+
+```
+rooms you can see = rooms in workspaces you belong to
+                  ∪ rooms you are explicitly a member of
+```
+
+One union, still indexed, still no network call — which is what matters, because **an FGA
+round trip must never sit in the shape proxy's hot path** and room authorisation is exactly
+that path.
+
+**So FGA's real trigger is the relational tail that does not reduce to a row:** per-event
+trace visibility (a trace label naming a repo the viewer cannot access, in a room they can),
+which agents a user may invoke, and cross-workspace sharing. Guests are a query.
 
 ### Deliberately not built
 
 - `projects` table — see below
 - Workspace switching UI — one default workspace, hidden
-- FGA — deferred until guests are real
+- FGA — deferred until the relational tail is real (per-event trace visibility), not until guests are
 - Cross-workspace rooms (Slack's XWS channels) — needs a join table; resist
 - Person-level identity linking
 
@@ -424,8 +489,9 @@ The column is on `rooms` now, nullable, and nothing reads it.
 **The line to hold.** The first request will be _"can I share this project with a client without
 giving them the whole workspace?"_ Saying yes makes projects an FGA resource with a parent
 relation, not a column — a different and much larger piece of work. If that becomes a real
-requirement, the answer is a **guest with room-level grants**, which is the FGA work already
-scheduled by the guest trigger. Do not reach for it by promoting projects.
+requirement, the answer is a **guest with room-level grants** — which needs no FGA: it is an
+org membership with role `guest`, no workspace membership, and `room_members` rows for the
+rooms in question. Do not reach for it by promoting projects.
 
 **Corollary for the UI:** a room's project must never affect who can see it. If a project ever
 looks like it is hiding rooms, that is a bug, not a feature request.
@@ -730,8 +796,10 @@ to the org, our webhook handler adds the default `workspace_membership` on accep
 Room membership checks are simple enough for Postgres, and they sit in the shape proxy's hot path
 where a network call is expensive.
 
-**WorkOS FGA** is worth adopting later for the genuinely relational cases: guest access to specific
-rooms, per-event trace visibility, which agents a user may invoke, cross-workspace sharing. Its
+**WorkOS FGA** is worth adopting later for the genuinely relational cases: per-event trace
+visibility, which agents a user may invoke, cross-workspace sharing. Guest access to specific
+rooms is _not_ among them — it resolves to a union over `room_members` (see Phase 0's role
+model). Its
 model is `resource_type / relation / subject` with inheriting relations, answering both "is user A
 an editor of document X" and "which documents can user A edit".
 
@@ -747,13 +815,16 @@ can authenticate into an MCP server _we publish_. We are the client, not the ser
 1. AuthKit integration in `apps/server`. Sealed cookie handling.
 2. WorkOS webhook handlers mirroring `users`, `organizations`, `organization_memberships`.
 3. **Signup — the single path** (org → org membership `owner` → default workspace → workspace
-   membership `admin` → room "general"). UI says "workspace" throughout; never shows the org level.
+   membership `admin`). UI says "workspace" throughout; never shows the org level. No room —
+   see Phase 0.
 4. Session carries `organization_id` only. Org switcher re-issues the session.
 5. Org roles configured in the WorkOS dashboard: `owner`, `admin`, `member`, `guest`.
 6. Invitation flow via WorkOS `onboard-user`; webhook handler adds the default
    `workspace_membership` on acceptance.
 7. A shared `unsealSession()` helper used by both the shape proxy and the write endpoint.
-8. Client-side account switcher — Electron holds multiple sessions.
+8. Client-side account switcher — Electron holds multiple sessions. **Desktop only**: a
+   browser has one cookie and therefore one session, so switching there is signing out and
+   back in. One email is one account, and the two are never linked server-side.
 
 ## Nuances
 
@@ -762,7 +833,19 @@ can authenticate into an MCP server _we publish_. We are the client, not the ser
 - **Resist putting `workspace_id` in the session** even though there is only one workspace and it
   would be convenient. That convenience is precisely what Slack had to unwind.
 - Mirrored tables are **read-only in application code**. A direct write to `organization_memberships`
-  will be silently overwritten by the next webhook.
+  will be silently overwritten by the next webhook. The one exception is signup, which writes
+  the org rows it just created from the API response rather than waiting for delivery.
+- **The mirror fetches a missing parent rather than failing.** A membership references a user
+  and an org by foreign key and either may be absent — the entity predates the endpoint, its
+  event was dropped, or delivery arrived out of order, all of which at-least-once unordered
+  delivery permits. Without this the insert violates the constraint and WorkOS retries a
+  delivery that can never succeed. Found exactly that way: an organization created before the
+  endpoint existed made every membership event for it fail forever, silently.
+- **Only an `active` membership grants anything.** WorkOS creates the membership the moment an
+  invitation is _sent_, with status `pending`, and flips it to `active` on acceptance — so
+  joining a workspace on membership creation alone hands access to everyone who has merely
+  been emailed. Check `status`, on created and updated both, since acceptance may arrive as
+  either.
 - **Test the SSO-enforced case early** with a WorkOS test org — the same identity entering one
   workspace by password and another by IdP. If that path is broken you won't find out until an
   enterprise trial.
@@ -773,9 +856,12 @@ can authenticate into an MCP server _we publish_. We are the client, not the ser
 
 ## Questions to settle
 
-- **Q1:** consumer or B2B first? This determines SSO connection spend and how early Directory Sync
-  and the Admin Portal matter. _Note: the tenancy model no longer depends on this answer — the
-  Slack parallel serves both._
+- **Q1:** consumer or B2B first? _Partly answered: **social login first, enterprise SSO on
+  demand.** Social providers are configured in the AuthKit dashboard and need no code —
+  `/auth/login` asks for `provider: 'authkit'` and the hosted page decides what to show. A
+  social provider is **not** an SSO connection, so early SSO spend is zero and Directory Sync
+  stays deferred. The org-switch fallback for an SSO-enforced org is implemented but untested;
+  it costs nothing to keep and waits for the first customer who demands an IdP._
 - **Q11:** does the Admin Portal cover enough of the org-admin surface to skip building one, or do
   workspace-level admin needs force a custom UI sooner?
 
@@ -2082,7 +2168,7 @@ document preview. A legible product distinction, not a compromise to apologise f
 | DeepSeek Harness / Cordis                     | rc.5 preview; our design is shaped around pi's event and package model                                                                                                                                                    | If pi stalls, or Cordis's sandbox/storage interfaces prove worth copying                                                                                                  |
 | Cordis on the frontend                        | React already provides both composability properties                                                                                                                                                                      | Never — the pattern is borrowed for subscriptions only                                                                                                                    |
 | `pi-subagents` extension                      | Runs-spawning-runs gives the same isolation with visible traces                                                                                                                                                           | If mid-turn delegation without a room entry becomes necessary                                                                                                             |
-| WorkOS FGA                                    | Workspace roles live in a `role` column at launch; FGA replaces the evaluation, not the storage                                                                                                                           | **Guests.** A guest in one room but not the workspace breaks a simple membership check — that is the trigger                                                              |
+| WorkOS FGA                                    | Workspace roles live in a `role` column at launch; FGA replaces the evaluation, not the storage                                                                                                                           | **Per-event trace visibility**, not guests — guests resolve to a union over `room_members` (see Phase 0's role model)                                                     |
 | WorkOS MCP Auth                               | We're the MCP client, not the server                                                                                                                                                                                      | If we expose the workspace as an MCP server                                                                                                                               |
 | WorkOS Directory Sync / Admin Portal          | Sales-driven                                                                                                                                                                                                              | First enterprise deal                                                                                                                                                     |
 | Typesense / Meilisearch / Quickwit / pgvector | SQLite FTS5 locally + Postgres FTS server-side covers v1                                                                                                                                                                  | When ranking quality is the complaint, or semantic search over Notion is wanted                                                                                           |

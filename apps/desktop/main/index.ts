@@ -89,7 +89,12 @@ function createWindow(): BrowserWindow {
   };
   load();
 
-  if (!app.isPackaged) window.webContents.openDevTools({ mode: 'detach' });
+  // Opt in, not by default. Electron's stock menu already binds Toggle Developer Tools —
+  // Cmd+Opt+I on macOS, Ctrl+Shift+I elsewhere — so opening it on every launch only gets in
+  // the way of the window you actually wanted to look at.
+  if (!app.isPackaged && process.env.RELAY_DEVTOOLS) {
+    window.webContents.openDevTools({ mode: 'detach' });
+  }
   return window;
 }
 
