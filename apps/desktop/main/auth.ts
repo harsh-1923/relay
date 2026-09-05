@@ -127,6 +127,11 @@ export function installAuth(
     const challenge = challengeFor(pendingVerifier);
     return shell.openExternal(`${uiUrl}/auth/login?surface=desktop&challenge=${challenge}`);
   });
+  // Abandoning a sign-in must invalidate the verifier, or a code from that browser tab
+  // could still be redeemed later.
+  ipcMain.handle('auth:cancel', () => {
+    pendingVerifier = null;
+  });
   ipcMain.handle('auth:token', () => readSession());
   // The server rotates an expired access token and hands the renderer a new seal.
   ipcMain.handle('auth:store', (_event, sealed: unknown) => {

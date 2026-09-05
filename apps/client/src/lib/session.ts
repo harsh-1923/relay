@@ -10,7 +10,18 @@ export interface Session {
 }
 
 export type SessionState =
-  { status: 'loading' } | { status: 'in'; session: Session } | { status: 'out'; error?: string };
+  | { status: 'loading' }
+  | { status: 'in'; session: Session }
+  /** Desktop only: the browser is open and we are waiting for it to come back. */
+  | { status: 'pending' }
+  | { status: 'out'; error?: string };
+
+export interface SessionApi {
+  state: SessionState;
+  signIn: () => void;
+  cancelSignIn: () => void;
+  signOut: () => void;
+}
 
 const platform = detectPlatform();
 
@@ -43,10 +54,10 @@ async function fetchSession(signal: AbortSignal): Promise<SessionState> {
   return { status: 'in', session };
 }
 
-export function useSession(): SessionState {
+export function useSession(): SessionApi {
   const [state, setState] = useState<SessionState>({ status: 'loading' });
 
-  const refresh = useCallback((signal: AbortSignal, error?: string) => {
+  const load = useCallback((signal: AbortSignal, error?: string) => {
     fetchSession(signal)
       .then((next) => setState(next.status === 'out' && error ? { status: 'out', error } : next))
       .catch((e: unknown) => {
@@ -56,29 +67,38 @@ export function useSession(): SessionState {
 
   useEffect(() => {
     const controller = new AbortController();
-    refresh(controller.signal);
-    // Desktop sign-in completes in another application; the shell tells us how it went.
-    const off = bridge()?.auth.onChange(({ error }) => refresh(controller.signal, error));
+    load(controller.signal);
+    // Desktop sign-in completes in another application; the shell tells us how it went, and
+    // that is also what ends the pending state — success or failure.
+    const off = bridge()?.auth.onChange(({ error }) => load(controller.signal, error));
     return () => {
       controller.abort();
       off?.();
     };
-  }, [refresh]);
+  }, [load]);
 
-  return state;
-}
+  const signIn = useCallback(() => {
+    const b = bridge();
+    if (!b) return void (window.location.href = '/auth/login');
+    // The window stays open while the browser does the work, so it has to say so — an
+    // unchanged screen invites a second click, which would mint a new verifier and quietly
+    // invalidate the tab already open.
+    setState({ status: 'pending' });
+    void b.auth.signIn();
+  }, []);
 
-/** Starts sign-in the way this surface needs it. */
-export function signIn() {
-  const b = bridge();
-  if (b) void b.auth.signIn();
-  else window.location.href = '/auth/login';
-}
+  const cancelSignIn = useCallback(() => {
+    void bridge()?.auth.cancelSignIn();
+    setState({ status: 'out' });
+  }, []);
 
-export function signOut() {
-  const b = bridge();
-  if (b) void b.auth.signOut();
-  else window.location.href = '/auth/logout';
+  const signOut = useCallback(() => {
+    const b = bridge();
+    if (b) void b.auth.signOut();
+    else window.location.href = '/auth/logout';
+  }, []);
+
+  return { state, signIn, cancelSignIn, signOut };
 }
 
 /** The server's callback reports failures as `?error=` on the sign-in page. */

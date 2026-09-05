@@ -21,6 +21,13 @@ sealed session cookie behaves identically in both, and `/auth/login` derives its
 The alternative — talking to `:8787` directly — would need CORS and `SameSite=None` that
 production never uses, which is divergence in the one place you cannot afford it.
 
+## Sign-in state is a state machine, not a boolean
+
+`useSession()` owns `loading | pending | in | out`. `pending` exists only on desktop, where
+sign-in completes in another application: the window shows what it is waiting for, the button
+is gone rather than merely disabled, and cancelling tells the shell to forget the attempt.
+Without it a second click would quietly break the tab already open.
+
 ## Scope
 
 Auth only: sign in, see who you are, sign out. Screens arrive in Phase 2 against live

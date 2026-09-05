@@ -10,11 +10,13 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
  * additions included — or a bundle cannot express that it requires them.
  */
 contextBridge.exposeInMainWorld('relay', {
-  bridgeVersion: 3,
+  bridgeVersion: 4,
   platform: process.platform,
   auth: {
     /** Opens the system browser. The result arrives later, via `onChange`. */
     signIn: (): Promise<void> => ipcRenderer.invoke('auth:sign-in'),
+    /** Forget an in-flight sign-in, so its code can no longer be redeemed. */
+    cancelSignIn: (): Promise<void> => ipcRenderer.invoke('auth:cancel'),
     /** The sealed session to send as a bearer, or null when signed out. */
     token: (): Promise<string | null> => ipcRenderer.invoke('auth:token'),
     /** Persist a seal the server rotated. */

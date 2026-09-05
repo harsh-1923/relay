@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/button';
-import { signOut, type Session } from '@/lib/session';
+import type { Session } from '@/lib/session';
 import { detectPlatform } from '@relay/sync/platform';
 
 const Row = ({ label, value }: { label: string; value: string }) => (
@@ -9,7 +9,7 @@ const Row = ({ label, value }: { label: string; value: string }) => (
   </div>
 );
 
-export function Home({ session }: { session: Session }) {
+export function Home({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
   const platform = detectPlatform();
 
   return (
@@ -32,7 +32,7 @@ export function Home({ session }: { session: Session }) {
           </p>
         )}
 
-        <Button variant="outline" className="mt-6 w-full" onClick={signOut}>
+        <Button variant="outline" className="mt-6 w-full" onClick={onSignOut}>
           Sign out
         </Button>
       </div>

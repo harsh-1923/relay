@@ -21,6 +21,8 @@ export interface RelayBridge {
   auth: {
     /** Opens the system browser; the result arrives later through `onChange`. */
     signIn(): Promise<void>;
+    /** Forget an in-flight sign-in, so its code can no longer be redeemed. */
+    cancelSignIn(): Promise<void>;
     token(): Promise<string | null>;
     /** Persist a seal the server rotated on an expired access token. */
     store(sealed: string): Promise<void>;

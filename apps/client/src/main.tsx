@@ -8,7 +8,7 @@ import { SignIn } from '@/routes/sign-in';
 import './styles.css';
 
 function App() {
-  const state = useSession();
+  const { state, signIn, cancelSignIn, signOut } = useSession();
 
   if (state.status === 'loading') return <div className="min-h-full" />;
 
@@ -16,12 +16,22 @@ function App() {
     <Routes>
       {state.status === 'in' ? (
         <>
-          <Route path="/" element={<Home session={state.session} />} />
+          <Route path="/" element={<Home session={state.session} onSignOut={signOut} />} />
           <Route path="/sign-in" element={<Navigate to="/" replace />} />
         </>
       ) : (
         <>
-          <Route path="/sign-in" element={<SignIn error={state.error} />} />
+          <Route
+            path="/sign-in"
+            element={
+              <SignIn
+                pending={state.status === 'pending'}
+                error={state.status === 'out' ? state.error : undefined}
+                onSignIn={signIn}
+                onCancel={cancelSignIn}
+              />
+            }
+          />
           <Route path="*" element={<Navigate to="/sign-in" replace />} />
         </>
       )}

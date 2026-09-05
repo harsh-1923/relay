@@ -55,6 +55,12 @@ the seal and returns the new seal in the `/auth/session` body; the renderer hand
 `auth.store()` so the next request carries it. Without that hand-back the next request would
 repeat the refresh against a refresh token WorkOS has already rotated away.
 
+**The window says what it is waiting for.** Sign-in happens elsewhere, so an unchanged
+screen is wrong twice over: it looks broken, and it invites a second click — which mints a
+fresh verifier and silently invalidates the browser tab already open. The renderer goes to a
+`pending` state on `signIn()` and leaves it only when the shell reports back. `auth.cancel`
+clears the pending verifier so an abandoned attempt cannot be redeemed later.
+
 **Failures reach the user.** Every way the round trip can go wrong — no code, no sign-in in
 progress, exchange refused, server unreachable — is sent to the renderer through
 `auth.onChange({ error })` and shown on the sign-in screen, not left in a log.
