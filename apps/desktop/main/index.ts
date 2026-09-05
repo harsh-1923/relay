@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, nativeImage, shell } from 'electron';
 import { join } from 'node:path';
 
 import { installAuth, registerProtocol } from './auth';
@@ -10,6 +10,7 @@ import { installAuth, registerProtocol } from './auth';
  */
 
 const UI_URL = process.env.RELAY_UI_URL ?? 'http://localhost:5173';
+const icon = nativeImage.createFromPath(join(__dirname, '../../resources/icon.png'));
 
 let mainWindow: BrowserWindow | null = null;
 registerProtocol();
@@ -43,6 +44,7 @@ function createWindow(): BrowserWindow {
     minHeight: 480,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     backgroundColor: '#0a0a0a',
+    icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -99,6 +101,9 @@ function createWindow(): BrowserWindow {
 }
 
 void app.whenReady().then(() => {
+  // BrowserWindow's `icon` only reaches Windows/Linux; the Dock reads whatever the app bundle
+  // declares (Phase 11) and ignores it in dev unless set here.
+  app.dock?.setIcon(icon);
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

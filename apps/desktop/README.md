@@ -84,3 +84,16 @@ them.
 
 Packaging, signing and the two update channels land in Phase 11. `electron-builder` is not
 installed yet, deliberately.
+
+## App icon
+
+`resources/icon.png` — a ring of rounded bars fading from pale pink to solid coral, like a
+spinner dial — is generated, not drawn:
+`pnpm --filter @relay/desktop icon` re-renders it from `resources/icon.mjs`, which rasterizes a
+signed-distance field straight to PNG bytes rather than assuming an SVG toolchain is on the
+machine. Correct the icon by editing the script, not the PNG.
+
+Not named `build/` — that collides with the generic build-output rule in `.gitignore`,
+`.prettierignore` and the shared ESLint config, all of which treat it as generated and
+ignore it. Phase 11's electron-builder config will point `build.icon` at this path explicitly
+rather than relying on the `build/`-directory convention.

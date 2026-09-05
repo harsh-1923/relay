@@ -1,4 +1,4 @@
-import { Check, Plus } from 'lucide-react';
+import { CheckTickSingle, PlusDefault } from '@relay/icons';
 
 import type { Account, SwitchTarget } from '@/lib/session';
 import { cn } from '@/lib/utils';
@@ -60,7 +60,7 @@ export function WorkspaceMenu({
                     )}
                   >
                     <span className="truncate">{w.name}</span>
-                    {active && <Check className="size-4 shrink-0" aria-label="current" />}
+                    {active && <CheckTickSingle className="size-4 shrink-0" aria-label="current" />}
                     {busy === w.organizationId && (
                       <span className="text-muted-foreground text-xs">switching…</span>
                     )}
@@ -88,7 +88,7 @@ export function WorkspaceMenu({
                   )}
                 >
                   <span className="truncate">{a.email}</span>
-                  {a.active && <Check className="size-4 shrink-0" aria-label="current" />}
+                  {a.active && <CheckTickSingle className="size-4 shrink-0" aria-label="current" />}
                 </button>
               </li>
             ))}
@@ -98,7 +98,7 @@ export function WorkspaceMenu({
                 className={cn(row, 'hover:bg-muted text-muted-foreground')}
               >
                 <span className="flex items-center gap-2">
-                  <Plus className="size-4 shrink-0" />
+                  <PlusDefault className="size-4 shrink-0" />
                   Add another account
                 </span>
               </button>

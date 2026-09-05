@@ -111,6 +111,25 @@ against synced data.
 Nothing here changes the Phase 2 decision — Electric plus TanStack DB is still the sync
 engine. Query sits beside it, not under it.
 
+### Icons
+
+`@relay/icons` (`packages/icons`) is the only icon package. Import every icon from it —
+`import { Ai01 } from '@relay/icons'` — never `lucide-react` or any other icon package; it has
+been removed and must not come back as a dependency.
+
+Vendored from [juspay/xyne-spaces](https://github.com/juspay/xyne-spaces)'s `packages/icons`
+(Apache-2.0, see `packages/icons/LICENSE`), ~980 icons in 5 styles (`Stroke`, `Solid`,
+`Contrast`, `Duo Stroke`, `Duo Solid`), shipped as uncompiled TS like every other package here.
+`packages/icons/README.md` has the full usage and the icon-adding pipeline. To find an icon
+name, search `packages/icons/src/index.ts`'s barrel or browse `ICON_META`/`ICON_SECTIONS`
+from `@relay/icons`.
+
+`apps/client/components.json`'s `iconLibrary` stays `"lucide"` — the shadcn CLI only knows how
+to substitute icons from a fixed list of packages (`lucide-react`, `@tabler/icons-react`,
+`@phosphor-icons`, `hugeicons`, `remixicon`) and cannot target `@relay/icons`. So after
+`shadcn add` generates a component, replace any `lucide-react` icon import it produces with
+the `@relay/icons` equivalent by hand before committing.
+
 ### Version-sensitive, verify rather than recall
 
 - **Cloudflare Sandbox SDK** is at 1.0 preview and its HTTP/WebSocket transports are already

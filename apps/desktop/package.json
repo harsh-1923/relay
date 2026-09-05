@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsc && electron .",
     "build": "tsc",
+    "icon": "node resources/icon.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run"
   },
