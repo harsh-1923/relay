@@ -17,6 +17,7 @@
     "dev": "pnpm --parallel --filter @relay/server --filter @relay/client dev",
     "predev:desktop": "node tooling/bootstrap/src/ports.mjs",
     "dev:desktop": "pnpm --parallel --filter @relay/server --filter @relay/client --filter @relay/desktop dev",
+    "dev:shell": "pnpm --filter @relay/desktop dev",
     "tunnel": "node tooling/bootstrap/src/tunnel.mjs",
     "services:stop": "supabase stop",
     "db:reset": "supabase db reset",
