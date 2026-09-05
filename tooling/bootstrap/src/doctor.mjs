@@ -273,23 +273,47 @@ if (!base) {
             continue;
           }
           // A 400 is the right answer: it reached our handler, which refused an unsigned POST.
-          let reachable;
-          try {
-            const r = await fetch(ep.endpoint_url, {
-              method: 'POST',
-              body: '{}',
-              signal: AbortSignal.timeout(8000),
-            });
-            reachable = r.status !== 404 && r.status < 500;
-          } catch {
-            reachable = false;
+          // Retry once — a freshly started quick tunnel takes a moment to register with the
+          // edge, and warning during that window is a false alarm.
+          const reach = async (url, ms) => {
+            try {
+              const r = await fetch(url, {
+                method: 'POST',
+                body: '{}',
+                signal: AbortSignal.timeout(ms),
+              });
+              return r.status !== 404 && r.status < 500;
+            } catch {
+              return false;
+            }
+          };
+
+          let reachable = await reach(ep.endpoint_url, 12000);
+          if (!reachable) {
+            await new Promise((r) => setTimeout(r, 1500));
+            reachable = await reach(ep.endpoint_url, 12000);
           }
-          if (reachable) ok(`webhook endpoint enabled and reachable (${host})`);
+
+          if (reachable) {
+            ok(`webhook endpoint enabled and reachable (${host})`);
+            continue;
+          }
+
+          // Do not guess at the cause. A tunnel forwards to the local worker, so a dead
+          // worker looks exactly like a dead tunnel from outside — and telling someone to
+          // restart a tunnel that is already running wastes their time.
+          const workerUp = await reach('http://localhost:8787/webhooks/workos', 3000);
+          if (!workerUp)
+            meh(
+              `${host} is not answering, and neither is the local worker`,
+              'The tunnel forwards to :8787, so start `pnpm dev` first. Auth is unaffected;\n' +
+                '      only the mirror stops updating.',
+            );
           else
             meh(
-              `webhook endpoint enabled but ${host} is not answering`,
-              'Normal if the tunnel is stopped — auth still works, but the mirror will drift.\n' +
-                '      Restart the tunnel and update the endpoint URL, or delete the endpoint.',
+              `the worker is running but ${host} is not answering`,
+              'The tunnel is down or has a new hostname. `pnpm tunnel` restarts it and\n' +
+                '      re-points WorkOS in one step.',
             );
         }
       }
