@@ -120,6 +120,26 @@ if (ungenerated.length)
     `${ungenerated.join(', ')}\n      Run \`pnpm run up secrets\`.`,
   );
 else ok('local secrets generated');
+// `env:setup` never overwrites an existing .env, which is correct — but it means a
+// variable added to .env.example later never reaches a developer who already has one.
+// Nothing else would notice.
+const drifted = [];
+for (const f of envs) {
+  const exPath = f.replace(/\.env$/, '.env.example');
+  if (!existsSync(exPath) || !existsSync(f)) continue;
+  const keys = (t) => new Set([...t.matchAll(/^(\w+)=/gm)].map((m) => m[1]));
+  const missing = [...keys(readFileSync(exPath, 'utf8'))].filter(
+    (k) => !keys(readFileSync(f, 'utf8')).has(k),
+  );
+  for (const k of missing) drifted.push(`${k} (${f.replace(`${ROOT}/`, '')})`);
+}
+if (drifted.length)
+  bad(
+    `${drifted.length} variable(s) in .env.example missing from .env`,
+    `${drifted.join(', ')}\n      Added to the example after your .env was created. Copy them across.`,
+  );
+else ok('.env files match their examples');
+
 if (unsupplied.length)
   bad(
     `${unsupplied.length} value(s) you must supply`,
@@ -199,7 +219,9 @@ if (!base) {
     // Is the local callback registered? WorkOS answers this without the worker running,
     // and an unregistered uri is invisible until someone clicks Sign in and gets a wall.
     if (server.WORKOS_CLIENT_ID && server.WORKOS_CLIENT_ID !== 'set-me') {
-      const callback = 'http://localhost:8787/auth/callback';
+      // The client is the origin the browser sees; the Vite proxy forwards /auth to the
+      // worker without rewriting Host, which is also how production behaves.
+      const callback = 'http://localhost:5173/auth/callback';
       const authorize =
         `${base}/user_management/authorize?response_type=code&provider=authkit` +
         `&client_id=${encodeURIComponent(server.WORKOS_CLIENT_ID)}` +

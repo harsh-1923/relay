@@ -2,11 +2,16 @@
   "name": "@relay/desktop",
   "version": "0.0.0",
   "private": true,
-  "type": "module",
+  "type": "commonjs",
   "scripts": {
+    "dev": "tsc && electron .",
+    "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@relay/tsconfig": "workspace:*"
-  }
+    "@relay/tsconfig": "workspace:*",
+    "@types/node": "^26.4.1",
+    "electron": "^44.2.0"
+  },
+  "main": "dist/main/index.js"
 }

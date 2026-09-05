@@ -15,11 +15,15 @@
   "devDependencies": {
     "@relay/tsconfig": "workspace:*",
     "drizzle-kit": "^0.31.10",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9",
     "vitest": "^5.0.0"
   },
   "dependencies": {
-    "drizzle-orm": "^0.45.2",
     "drizzle-zod": "^0.8.3",
     "zod": "^4.5.4"
+  },
+  "peerDependencies": {
+    "drizzle-orm": "*"
   }
 }

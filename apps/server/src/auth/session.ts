@@ -6,6 +6,8 @@ export interface Env {
   WORKOS_COOKIE_PASSWORD: string;
 }
 
+export type { Env as AuthEnv };
+
 /**
  * Invariant 3: the session is `{user_id, organization_id}`. Workspace is NOT in it.
  *
@@ -25,7 +27,12 @@ export const COOKIE = 'relay_session';
 export const workos = (env: Env) =>
   new WorkOS(env.WORKOS_API_KEY, { clientId: env.WORKOS_CLIENT_ID });
 
-/** Derived rather than configured, so it cannot drift from where the worker actually runs. */
+/**
+ * Derived from the incoming request rather than configured, so it cannot drift from where
+ * the app is actually being used. In development that is the Vite origin, because the dev
+ * server proxies here without rewriting Host — the same origin the browser sees, which is
+ * also true in production.
+ */
 export const redirectUri = (request: Request) => new URL('/auth/callback', request.url).toString();
 
 function cookieValue(request: Request, name: string): string | null {

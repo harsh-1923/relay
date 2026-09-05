@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./persister": "./src/persister.ts"
+    "./persister": "./src/persister.ts",
+    "./platform": "./src/platform.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

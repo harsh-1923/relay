@@ -1,5 +1,13 @@
 {
-  "extends": "@relay/tsconfig/react.json",
-  "compilerOptions": { "noEmit": true },
-  "include": ["main", "preload", "renderer/src"]
+  "extends": "@relay/tsconfig/base.json",
+  "compilerOptions": {
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "outDir": "dist",
+    "types": ["node"],
+    // Electron loads main and preload as CommonJS, so ESM syntax must be downlevelled
+    // rather than preserved.
+    "verbatimModuleSyntax": false
+  },
+  "include": ["main", "preload"]
 }

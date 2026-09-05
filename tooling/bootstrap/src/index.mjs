@@ -341,13 +341,9 @@ function readEnv(file) {
 // ── phase: dev ────────────────────────────────────────────────────────────────
 function dev() {
   phase('dev');
-  step('apps/server — `pnpm --filter @relay/server dev` (:8787)');
-  skip('every other app is still a Phase 0 stub');
-  console.log(
-    dim(
-      '    This becomes the app picker and multi-pane process TUI once more than one\n    app runs.',
-    ),
-  );
+  step('pnpm dev          — server :8787 + client :5173');
+  step('pnpm dev:desktop  — the above, plus the Electron shell');
+  skip('apps/site, broker and runtime are still Phase 0 stubs');
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────

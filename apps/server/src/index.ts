@@ -4,27 +4,31 @@ import {
   setSessionCookie,
   unsealSession,
   workos,
-  type Env,
 } from './auth/session';
-import { failed, signedIn, signedOut } from './page';
+import { handleWorkosWebhook, type Env } from './webhooks/workos';
 
-const html = (body: string, headers: HeadersInit = {}) =>
-  new Response(body, { headers: { 'Content-Type': 'text/html; charset=utf-8', ...headers } });
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body, null, 2), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+  });
 
 const seeOther = (location: string, headers: HeadersInit = {}) =>
   new Response(null, { status: 303, headers: { Location: location, ...headers } });
 
+/**
+ * API only. The UI is apps/client — this server serves no HTML.
+ *
+ * In development the Vite dev server proxies /auth and /api here, so the browser is
+ * same-origin with the API exactly as it is in production. That keeps the sealed cookie
+ * behaving identically in both, rather than needing CORS and SameSite=None in dev only.
+ */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const secure = url.protocol === 'https:';
 
     switch (url.pathname) {
-      case '/': {
-        const session = await unsealSession(request, env);
-        return html(session ? signedIn(session) : signedOut());
-      }
-
       case '/auth/login':
         return seeOther(
           workos(env).userManagement.getAuthorizationUrl({
@@ -37,9 +41,8 @@ export default {
       case '/auth/callback': {
         const code = url.searchParams.get('code');
         if (!code) {
-          const reason =
-            url.searchParams.get('error_description') ?? 'No authorization code was returned.';
-          return html(failed(reason), { 'Cache-Control': 'no-store' });
+          const reason = url.searchParams.get('error_description') ?? 'no_code';
+          return seeOther(`/sign-in?error=${encodeURIComponent(reason)}`);
         }
         try {
           const { sealedSession } = await workos(env).userManagement.authenticateWithCode({
@@ -47,10 +50,11 @@ export default {
             clientId: env.WORKOS_CLIENT_ID,
             session: { sealSession: true, cookiePassword: env.WORKOS_COOKIE_PASSWORD },
           });
-          if (!sealedSession) return html(failed('WorkOS returned no sealed session.'));
+          if (!sealedSession) return seeOther('/sign-in?error=no_session');
           return seeOther('/', { 'Set-Cookie': setSessionCookie(sealedSession, secure) });
         } catch (e) {
-          return html(failed(e instanceof Error ? e.message : 'Unknown error.'));
+          const reason = e instanceof Error ? e.message : 'unknown';
+          return seeOther(`/sign-in?error=${encodeURIComponent(reason)}`);
         }
       }
 
@@ -65,17 +69,18 @@ export default {
         return seeOther(location, { 'Set-Cookie': clearSessionCookie() });
       }
 
-      // Shows exactly what every authorisation decision downstream will key off.
+      // What every authorisation decision downstream keys off. A 401 is a normal answer.
       case '/auth/session': {
         const session = await unsealSession(request, env);
-        return new Response(JSON.stringify(session, null, 2), {
-          status: session ? 200 : 401,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return session ? json(session) : json({ error: 'unauthenticated' }, 401);
       }
 
+      case '/webhooks/workos':
+        if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+        return handleWorkosWebhook(request, env);
+
       default:
-        return new Response('Not found', { status: 404 });
+        return json({ error: 'not_found' }, 404);
     }
   },
 };
