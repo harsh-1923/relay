@@ -27,12 +27,40 @@ network, so an internal URL is a genuine pivot, not a broken link.
 **One shared `persist:agent` partition**, not one per panel: agent-opened pages never touch
 app storage, and a provider login still happens once ever rather than once per pane.
 
+## Sign-in happens in the system browser, never in the window
+
+Passkeys, Touch ID and an existing Google session all work in a real browser; none of them
+work in an Electron `BrowserWindow`. Google's passkey prompt does not fail there — it waits
+forever on "Verifying it's you…". So `main/auth.ts` never loads a login page:
+
+```
+Sign in → shell.openExternal(client/auth/login?surface=desktop)
+        → WorkOS, in the user's browser
+        → server callback sees state=desktop → hands off to relay://auth/callback?code=…
+        → shell redeems the code at /auth/exchange → sealed session
+        → stored with safeStorage (OS keychain) → renderer sends it as a bearer
+```
+
+WorkOS never sees `relay://`; the redirect URI stays the client's. The code on the deep link
+is single-use and the exchange still needs the server's API key, so it is not a session.
+The renderer never touches the stored file — it asks the bridge for a token.
+
+**Not yet PKCE.** A native app should bind the code to the party that will redeem it. The
+verifier has to be minted by the shell and its challenge carried through the server's
+authorize URL, which is more plumbing than this first pass. Until then the window is small:
+single-use code, short expiry, exchange gated on the API key.
+
+Test the plumbing without a real login: with the shell running,
+`open "relay://auth/callback?code=probe"` should log `exchange failed: 401` — the link
+reached main, main reached the server, the server reached WorkOS.
+
 ## `bridgeVersion`
 
 The preload exposes one number. It is the compatibility contract with a downloaded UI bundle
 (Phase 11): a bundle declares the minimum shell it needs, and the updater refuses one this
-shell cannot run rather than showing a white screen. Bump it only on a breaking change to
-what the bridge exposes.
+shell cannot run rather than showing a white screen. A bundle declares a _minimum_, so bump
+it on any change to what is exposed — additions included — or a bundle cannot say it needs
+them.
 
 Packaging, signing and the two update channels land in Phase 11. `electron-builder` is not
 installed yet, deliberately.

@@ -46,11 +46,24 @@ function cookieValue(request: Request, name: string): string | null {
 }
 
 /**
- * The ONLY place the session cookie is parsed. The shape proxy and the write endpoint both
- * call this — two implementations would drift, and the drift would be an authorization bug.
+ * The sealed session, from wherever this surface carries it. The browser is same-origin
+ * with the API and sends a cookie. The desktop renderer runs on a local origin, so it is
+ * cross-origin to the API and sends the same sealed value as a bearer instead of fighting
+ * SameSite=None across a custom protocol.
+ */
+function sealedFrom(request: Request): string | null {
+  const auth = request.headers.get('Authorization');
+  if (auth?.startsWith('Bearer ')) return auth.slice('Bearer '.length).trim() || null;
+  return cookieValue(request, COOKIE);
+}
+
+/**
+ * The ONLY place a session is parsed — cookie or bearer. The shape proxy and the write
+ * endpoint both call this; two implementations would drift, and the drift would be an
+ * authorization bug.
  */
 export async function unsealSession(request: Request, env: Env): Promise<Session | null> {
-  const sealed = cookieValue(request, COOKIE);
+  const sealed = sealedFrom(request);
   if (!sealed) return null;
 
   try {

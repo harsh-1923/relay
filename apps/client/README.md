@@ -28,4 +28,6 @@ TanStack DB collections — building them now against mock data means rewriting 
 a live query has a different shape than props.
 
 The client never parses a session. It asks `/auth/session`, which is the only place
-`unsealSession()` runs.
+`unsealSession()` runs. On the browser that request carries a cookie; on desktop
+`lib/session.ts` gets a token from the bridge and sends it as a bearer, and re-fetches when
+the shell says the session changed — sign-in completes in another application.

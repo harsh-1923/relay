@@ -1,6 +1,8 @@
 import { app, BrowserWindow, shell } from 'electron';
 import { join } from 'node:path';
 
+import { installAuth, registerProtocol } from './auth';
+
 /**
  * The Electron shell. It owns the window, the webview hardening and OS integration — it does
  * not own the UI. The renderer is `apps/client`, loaded from the dev server here and, in
@@ -8,6 +10,10 @@ import { join } from 'node:path';
  */
 
 const UI_URL = process.env.RELAY_UI_URL ?? 'http://localhost:5173';
+
+let mainWindow: BrowserWindow | null = null;
+registerProtocol();
+installAuth(UI_URL, () => mainWindow);
 
 /** Blocked outright. The desktop app sits inside the user's network, so an internal URL is a
  *  genuine pivot, not a broken link (H10). */
@@ -30,7 +36,7 @@ function isNavigable(raw: string | undefined): boolean {
 }
 
 function createWindow() {
-  const window = new BrowserWindow({
+  const window = (mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
     minWidth: 720,
@@ -45,6 +51,9 @@ function createWindow() {
       // Panels. Hardened centrally below, never per element.
       webviewTag: true,
     },
+  }));
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null;
   });
 
   /**

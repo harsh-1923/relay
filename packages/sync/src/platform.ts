@@ -14,15 +14,30 @@ export interface Platform {
   session: 'cookie' | 'bearer';
 }
 
+/** What the Electron preload exposes. Absent in the browser. */
+export interface RelayBridge {
+  bridgeVersion: number;
+  platform: string;
+  auth: {
+    /** Opens the system browser; the result arrives later through `onChange`. */
+    signIn(): Promise<void>;
+    token(): Promise<string | null>;
+    signOut(): Promise<void>;
+    onChange(cb: () => void): () => void;
+  };
+}
+
 declare global {
   interface Window {
-    relay?: { bridgeVersion: number };
+    relay?: RelayBridge;
   }
 }
 
+export const bridge = (): RelayBridge | undefined =>
+  typeof window !== 'undefined' ? window.relay : undefined;
+
 export function detectPlatform(): Platform {
-  const bridged = typeof window !== 'undefined' && !!window.relay;
-  return bridged
+  return bridge()
     ? { panels: true, persistence: 'sqlite', session: 'bearer' }
     : { panels: false, persistence: 'indexeddb', session: 'cookie' };
 }

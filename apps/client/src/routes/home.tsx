@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/button';
-import type { Session } from '@/lib/session';
+import { signOut, type Session } from '@/lib/session';
 import { detectPlatform } from '@relay/sync/platform';
 
 const Row = ({ label, value }: { label: string; value: string }) => (
@@ -32,11 +32,7 @@ export function Home({ session }: { session: Session }) {
           </p>
         )}
 
-        <Button
-          variant="outline"
-          className="mt-6 w-full"
-          onClick={() => (window.location.href = '/auth/logout')}
-        >
+        <Button variant="outline" className="mt-6 w-full" onClick={signOut}>
           Sign out
         </Button>
       </div>
