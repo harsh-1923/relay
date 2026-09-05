@@ -1,3 +1,15 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+  - 'packages/connectors/*'
+  - 'tooling/*'
+
+allowBuilds:
+  esbuild: set this to true or false
+  workerd: set this to true or false
+
+# Build scripts are opt-in. esbuild ships a platform binary that vitest and drizzle-kit
+# need; nothing else is approved.
+onlyBuiltDependencies:
+  - esbuild
+  - workerd

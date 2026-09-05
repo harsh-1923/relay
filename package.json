@@ -10,6 +10,11 @@
     "node": ">=22"
   },
   "scripts": {
+    "up": "node tooling/bootstrap/src/index.mjs",
+    "up:reconfigure": "node tooling/bootstrap/src/index.mjs --reconfigure",
+    "health": "node tooling/bootstrap/src/doctor.mjs",
+    "services:stop": "supabase stop",
+    "db:reset": "supabase db reset",
     "build": "pnpm -r --if-present build",
     "dev": "pnpm -r --parallel --if-present dev",
     "lint": "eslint .",
@@ -30,6 +35,7 @@
     "husky": "^9.1.7",
     "lint-staged": "^17.4.1",
     "prettier": "^3.9.6",
+    "supabase": "^2.116.0",
     "typescript": "^6.0.3"
   }
 }

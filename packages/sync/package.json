@@ -1,0 +1,16 @@
+{
+  "name": "@relay/sync",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./persister": "./src/persister.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@relay/tsconfig": "workspace:*"
+  }
+}

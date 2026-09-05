@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "relay-server",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  // The WorkOS SDK needs Node built-ins. Everything else here stays Web-standard.
+  "compatibility_flags": ["nodejs_compat"],
+  "dev": { "port": 8787 },
+  "observability": { "enabled": true },
+}
