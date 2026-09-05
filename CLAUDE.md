@@ -30,6 +30,10 @@ produced the architecture, with a topic map at the top. Several decisions were a
 argued back; the losing options and the reasons they lost are recorded there and almost nowhere else.
 Search it before re-opening a decision that looks arbitrary.
 
+`[docs/plans/](docs/plans/)` **is the current work.** One plan per phase, with the breakdown,
+the order, what is verified, and the decisions it asks `ARCHITECTURE.md` to record. Start
+there for "what's next".
+
 ## Working agreement
 
 - **Do not edit** `docs/ARCHITECTURE.md` **unless asked to.** It is edited deliberately, in its own turn,
