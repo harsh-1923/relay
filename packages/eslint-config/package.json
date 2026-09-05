@@ -1,0 +1,21 @@
+{
+  "name": "@relay/eslint-config",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared ESLint flat configs",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./base": "./base.js",
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "eslint": ">=9"
+  },
+  "dependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.12.0",
+    "typescript-eslint": "^8.69.0"
+  }
+}
