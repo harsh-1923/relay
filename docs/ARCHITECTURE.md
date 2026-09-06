@@ -41,8 +41,12 @@ a solo user is an org with one member, exactly as in Slack.
 Rules that apply in every phase and are cheap now, expensive later. Violating any of these is a
 design regression, not a trade-off.
 
-1. **Shapes are scoped by room, never per user.** Per-user shapes destroy CDN hit rate _and_
-   multiply the Electric write meter.
+1. **Shapes are scoped by a container many subscribers share — room _or_ conversation — never
+   per user.** Per-user shapes destroy CDN hit rate _and_ multiply the Electric write meter.
+   Chat is owned by a conversation rather than a room (Phase 0), and everyone in one subscribes
+   to the same shape, so the protection is unchanged. One named exception: the membership
+   directory ("which rooms am I in") is per-user by definition, and a request cannot answer it
+   because a request is not local-first. It is tens of rows changing a few times a week.
 2. **`organization_id` sits on every tenant table, and `workspace_id` on everything below the
    workspace** — including where either is derivable by join. The shape proxy authorises on every
    request and must never join to do it; a missing hop can't silently leak across tenants.
@@ -223,6 +227,13 @@ WorkOS.
 
 ### Schema: Drizzle is the source of truth, SQL is generated
 
+**Primary keys are UUIDv7** (RFC 9562), not v4. Ids sort chronologically and insert with
+locality while staying a native `uuid`, so a message shape can be bounded by a primary-key range
+and history pages by keyset with no second ordering column. Ours carries sub-millisecond precision
+(§6.2 method 3) so ids minted in the same millisecond still ascend — without it, message order,
+which _is_ the read path of a chat table, is arbitrary within a millisecond. Postgres 18 ships
+`uuidv7()` and supersedes our function.
+
 **Decided.** Tables are defined in TypeScript in `packages/schema/src/tables/`;
 `drizzle-kit generate` emits SQL into `supabase/migrations/` with Supabase-compatible
 timestamps, so the Supabase CLI stays the only thing that _runs_ migrations.
@@ -312,10 +323,11 @@ create table rooms (
 
 create table room_members (
   room_id         uuid not null references rooms(id),
-  user_id         text not null references users(id),
+  actor_id        uuid not null references actors(id),         -- people and agents alike
+  workspace_id    uuid not null references workspaces(id),     -- denorm; the sketch omitted it
   organization_id text not null references organizations(id),  -- denorm
   created_at      timestamptz not null default now(),
-  primary key (room_id, user_id)
+  primary key (room_id, actor_id)
 );
 
 create table agents (
@@ -454,9 +466,22 @@ lookup, no join, invariant 2 satisfied. A guest passes it; a workspace shape rea
 What changes is only the rule that assumed _workspace member ⇒ sees the workspace's rooms_:
 
 ```
-rooms you can see = rooms in workspaces you belong to
+rooms you can see = public rooms in workspaces you belong to
                   ∪ rooms you are explicitly a member of
 ```
+
+**The first term needs `and is_private = false`**, which an earlier draft of this line omitted —
+without it every workspace member reads every private room. Written as the two paths the proxy
+actually takes, both primary-key lookups and neither a join:
+
+| Room    | Read check                                      |
+| ------- | ----------------------------------------------- |
+| public  | `workspace_memberships (workspace_id, user_id)` |
+| private | `room_members (room_id, actor_id)`              |
+
+**Workspace roles do not reach into rooms.** There is no admin override into a private room —
+that would put an FGA-shaped question back on the hot path. The one privileged act at room level
+is archiving, which `rooms.created_by` grants: reversible, destroys nothing, needs no role table.
 
 One union, still indexed, still no network call — which is what matters, because **an FGA
 round trip must never sit in the shape proxy's hot path** and room authorisation is exactly
@@ -889,13 +914,48 @@ query engine.
 - **Rocicorp Zero** — the Replication Manager is a single instance, and every client query is a
   server-maintained materialised view, so cost scales with `clients × queries`. Electric's shape
   logs are plain HTTP so CDNs de-duplicate; benchmarked at 100k–1M concurrent clients on one server.
-- **PowerSync** — rejected on browser grounds (WASM SQLite / OPFS pain). _This rejection is weaker
-  than it was_ — in Electron you'd use native SQLite and that pain disappears. Electric still wins
-  on read-path economics, which is the reason that mattered.
+- **PowerSync** — **rejected on read-path economics, not on browser grounds.** The earlier reason
+  given here (WASM SQLite / OPFS pain) is now simply false: TanStack DB's own browser persistence
+  is wa-sqlite over OPFS, via PowerSync's `@journeyapps` fork. The real reason is architectural and
+  survives: PowerSync holds **a persistent stream per client** and its buckets are **scoped per
+  user, not shared** — so nothing collapses at a CDN, and cost grows with concurrent clients.
+  That is the same curve Zero was rejected for. Their own figure is "tens of thousands of
+  concurrent clients per PowerSync Service instance"; Electric's is 100k–1M on one server.
+  Re-checked 2026-09-06, after Electric Cloud was announced as winding down.
 
 **Trade-offs accepted:** Electric is read-path only (Phase 3 builds the write path); a shape covers
 **one table** so joins happen client-side; Electric's HTTP API is **public by default**, so shapes
 must be defined server-side behind a proxy.
+
+### Self-hosted, because Electric Cloud is winding down
+
+**Decided 2026-09-06.** Electric was [acquired by
+Databricks](https://electric.ax/blog/2026/08/11/electric-joining-databricks) on 11 August 2026 to
+fold sync into Lakebase/Neon, and the announcement is explicit: _"Electric Cloud is winding
+down. Cloud users will need to self-host or move to another provider."_ No public shutdown date.
+
+**What this does not change.** The engine stays Apache 2.0 — Postgres Sync, PGlite, **TanStack DB**
+and Durable Streams are all named as remaining open. And the reason Electric was chosen is a
+property of the _protocol_, not of who hosts it: shape logs are plain HTTP that a CDN
+de-duplicates. Self-hosted Electric still collapses at the CDN, so the economics that beat Zero
+and PowerSync are intact.
+
+**What it does change.** We run a stateful service, which is new — everything else here is
+serverless. Electric caches shape logs on a **persistent filesystem**, prioritises **disk speed
+over memory over CPU**, and needs a **direct** Postgres connection because poolers do not carry
+logical replication. That is squarely what H8 warned about, now applied to the sync engine rather
+than the proxy: it cannot go on Workers.
+
+The shape becomes: client → Worker (shape proxy, auth, cache headers) → Electric (a small
+always-on host with fast disk) → Postgres. The Worker is still where the CDN collapsing happens.
+
+**The one consolation:** the on-disk shape log is _derived_. Lose the volume and Electric rebuilds
+it from Postgres — no backup story needed. Clients take a `must-refetch` and re-sync, which is
+survivable but is exactly the truncate hazard in `docs/plans/local-first.md` D4.
+
+**Neon / Lakebase is not an alternative today.** The acquisition's stated intent is to build sync
+into Lakebase, but nothing is shipping: Lakebase is serverless Postgres with branching and
+autoscaling, with no sync product announced. Worth watching; not worth waiting for.
 
 ### Shapes are room-scoped and time-bounded
 
@@ -937,7 +997,10 @@ equivalent it stays in the tens of dollars at 100k MAU (H8).
 
 ## Steps
 
-1. Electric Cloud project pointed at Supabase. Verify logical replication.
+1. **Electric self-hosted** — `electricsql/electric` with a persistent volume. `DATABASE_URL`
+   must be the **direct** connection, never the pooler. `ELECTRIC_SECRET` is added by the proxy
+   and never reaches a client. Postgres 14+, `wal_level=logical`, a user with `REPLICATION`;
+   Electric creates its publication and slot if privileged. Health at `/v1/health`.
 2. **Set up `pg_replication_slots` lag alerting before anything else** (H1).
 3. Shape proxy in `apps/server/src/shapes/`: unseal session → check membership → proxy to Electric.
 4. Shape definitions in `packages/schema`, **server-side only**.
@@ -950,9 +1013,16 @@ equivalent it stays in the tens of dollars at 100k MAU (H8).
 - **H1 first, genuinely.** An inactive replication slot grows the WAL without bound, and Supabase
   disk grows and never shrinks. This is the hazard most likely to cause an unrecoverable incident.
 - On Electric PAYG there are **no Postgres subqueries in shapes**. Design shapes accordingly or
-  budget for Pro.
-- **Time-bound the shapes from the start.** A shape without a time bound is easy to write and
-  painful to retrofit once clients depend on the history being there.
+  budget for Pro. The room and chat schema needs none — every where clause is row-local equality.
+- **Electric's docs are at `electric.ax`**; the `electric-sql.com` links in this file now redirect.
+- **Time-bound the shapes from the start — but not with a clock.** Electric where clauses
+  **cannot call `now()`** ("cannot use non-deterministic SQL functions like `count()` or
+  `now()`") and there is no `LIMIT`, so neither "the last 7 days" nor "the last 500 messages" is
+  expressible. Baking a literal timestamp in at subscribe time is worse than no bound: every
+  client gets a different shape definition, nothing collapses at the CDN, and the read-path
+  economics that chose Electric evaporate. The bound is a **column** — `conversations.sync_floor`,
+  a message id below which clients do not sync, advanced server-side with hysteresis. See
+  `docs/plans/local-first.md` D3.
 - **Build the subscription registry now**, before there are many rooms. It's the thing you can't add
   later without touching every call site.
 - **Verify a CDN actually sits in front of Electric and is collapsing requests.** The entire cost
@@ -960,7 +1030,9 @@ equivalent it stays in the tens of dollars at 100k MAU (H8).
 
 ## Questions to settle
 
-- **Q2:** Electric Cloud egress IPs / region — needed before locking any Supabase network allowlist.
+- ~~**Q2:** Electric Cloud egress IPs / region.~~ — **MOOT.** Electric Cloud is winding down; we
+  self-host. Replaced by: **where does the Electric container run**, given it is stateful, wants
+  fast local disk, and is the one piece of this stack that cannot live on Cloudflare.
 - **Q3:** does Electric's replication connection count as "activity" for Supabase free-tier pause?
   (Matters for staging cost.)
 
@@ -1010,11 +1082,35 @@ Two users chat in a room in real time, and no user action writes to a synced tab
 
 **Goal:** offline cold start renders the room.
 
-> **Revised.** Earlier drafts of this document assumed the persister was ours to write from
-> scratch (est. 2–3 days plus a week of edge cases). That is out of date. TanStack DB now ships
-> `persistedCollectionOptions` over a shared `db-sqlite-persistence-core`, with published adapters
-> for Tauri, Expo, React Native and Cloudflare Durable Objects. **Revised estimate: 1–2 days**,
-> most of it native-module packaging rather than logic.
+> **Revised twice.** Earlier drafts assumed the persister was ours to write from scratch (est.
+> 2–3 days plus a week of edge cases). Verified against the published packages on 2026-09-06, it
+> is richer than the first revision knew — and none of it is in TanStack DB's docs index, so read
+> the packages, not the site.
+>
+> `@tanstack/db-sqlite-persistence-core` (0.2.20) provides `persistedCollectionOptions`, which
+> **wraps** a sync config rather than replacing it and declares a `sync-present` / `sync-absent`
+> mode, so offline cold start is a first-class state. `@tanstack/electron-db-sqlite-persistence`
+> (**0.1.32**) runs `better-sqlite3` in the main process and bridges it to the renderer over IPC;
+> `@tanstack/browser-db-sqlite-persistence` is wa-sqlite over OPFS; `@tanstack/offline-transactions`
+> (1.0.53) is a durable outbox with retry and idempotency keys.
+>
+> **H11 is solved upstream.** `@tanstack/electric-db-collection` persists `{offset, handle,
+shapeId}` and replays it on launch, so a restart resumes the shape log instead of re-reading it.
+> The hazard becomes a regression test rather than a design task.
+>
+> **The caution is version age, not capability.** `@tanstack/db` is 0.8.7 and the Electron bridge
+> 0.1.32 — the youngest dependency under the oldest promise. Pin exact versions and keep the
+> persister behind the `sync/src/local/` interface.
+>
+> **A shape-backed collection is a cache, not storage.** A row leaving a shape arrives as a
+> `delete`, and a `must-refetch` truncates the whole collection — so anything that must outlive a
+> shape change lives in a separate `local-only` collection. That is the window-and-archive split in
+> `docs/plans/local-first.md` D4/D5.
+>
+> **The browser is best-effort**, unlike the desktop: OPFS is evictable, Safari caps
+> script-writable storage at seven days without interaction, and there is no fallback — a missing
+> prerequisite throws rather than degrading. The surface table's "everything except the webview
+> panel" understates that difference.
 
 ## Decisions
 
@@ -1306,8 +1402,18 @@ everyone else, and it is the defence against runaway spawned runs (H5).
 
 ## Decided: agent identity (was Q6)
 
-**An agent is a resource, not a principal.** No agent rows in `users`, no room-scoped agent
-credentials, no second identity system.
+**An agent is a resource, not a principal — but it _is_ addressable.** Amended 2026-09-06: the
+authority half of this stands, the addressability half was too strong.
+
+Agents and people are the same construct wherever the product points at somebody — member list,
+message author, mention, "who opened this panel". That is the `actors` table (Phase 0): one row
+per addressable thing in an org, `kind` discriminating, pointing at a `users` row or an `agents`
+row. An agent joins a room with a `room_members` row exactly as a person does, and that row is
+what makes it invokable there.
+
+Still **no agent rows in `users`** — that is a WorkOS mirror with `email not null unique`, and
+writing to it breaks invariant 4. And still no second identity system: an actor is never the
+subject of a read check. The shape proxy only ever authorises humans.
 
 The agent service authenticates to the write endpoint **as a service**. Each write is authorised by
 the `runs` row it references — which already carries `invoked_by`, `workspace_id` and
@@ -1918,9 +2024,15 @@ Electron security patching because we ship a browser.
 
 ### The agent emits only a URL — and a room holds several
 
-What syncs is tiny: a `panels` row of `{room_id, url, opened_by, at}`. No content sync, no
-caching, no staleness questions, no SSRF surface, no fetch cost, no tokens to manage. Each
-user logs in with their own session.
+What syncs is tiny: a `panels` row. No content sync, no caching, no staleness questions, no SSRF
+surface, no fetch cost, no tokens to manage. Each user logs in with their own session.
+
+**Generalised in Phase 0** from `{room_id, url, opened_by, at}` to `kind` plus a `config` jsonb —
+`browser` and `chat` today, `sandbox`, `terminal` and a native doc when they are wanted, without a
+migration each time. `created_by` is an `actor_id`, which is what makes "an agent opened a panel"
+and "a person opened a panel" the same row. A chat panel also carries a `conversation_id` and
+mirrors that conversation's visibility, because the panels shape filters on visibility and the
+proxy cannot join to find it.
 
 **A room holds multiple panels, arranged like editor panes.** Earlier drafts had one URL per
 room; that was too small. `<webview>` is the right primitive for this and beats

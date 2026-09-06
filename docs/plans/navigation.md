@@ -571,8 +571,9 @@ say it needs them.
 
 ## Questions to settle
 
-- **Room ID type** — UUID or ULID. Decides URL length and whether `paths` encodes. With the
-  `rooms` DDL.
+- ~~**Room ID type** — UUID or ULID.~~ — **RESOLVED: UUIDv7** (`rooms.md` D11). Neither, in
+  the end: RFC 9562's v7 gives ULID's ordering and index locality inside the native `uuid`
+  type. 36 characters, so **`paths` gains no encoder** and the grammar is unchanged.
 - **Account-level surfaces** — profile, notification preferences: modal, or a route every
   strip carries? (Hazard N4.)
 - **Window bounds** — into `ui_state` under the same key, or shell-owned? Phase 11.

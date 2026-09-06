@@ -1,0 +1,658 @@
+{
+  "info": {
+    "name": "relay \u2014 API",
+    "description": "# relay\n\nEvery HTTP endpoint the server actually serves, as of this collection being written.\n\n## What is not here, and why\n\n**There are no room, chat or message endpoints yet.** Rooms, conversations, messages, panels and their authorisation exist as schema and as server-side modules (`src/rooms.ts`, `src/access.ts`, `src/actors.ts`) with 58 tests behind them, but nothing routes to them: reads arrive over Electric shapes (Phase 2, the shape proxy) and writes over a write endpoint (Phase 3). Neither is built. Nothing was invented here to fill the gap.\n\n## Getting a session\n\nAuthKit owns the sign-in round trip, so a session cannot be minted from Postman.\n\n1. `pnpm run up && pnpm dev`\n2. Sign in at <http://localhost:5173>\n3. Copy the `relay_session` cookie value (DevTools \u2192 Application \u2192 Cookies)\n4. Paste it into the collection's **session** variable\n\nThe server accepts the same sealed value as `Authorization: Bearer`, so the browser cookie and the Postman bearer are interchangeable. Folder 1 also has the desktop PKCE path, which mints its own verifier.\n\n## Token refresh\n\nA seal expires. When the server refreshes one mid-request it returns the new seal in the body as `refreshedSession` for bearer callers, and a collection-level script rolls `{{session}}` forward automatically \u2014 so a long Postman run does not fall over.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{session}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// A refreshed access token comes back in the body for bearer callers.",
+          "// Roll {{session}} forward so the collection keeps working across a token expiry.",
+          "try {",
+          "  const b = pm.response.json();",
+          "  if (b && b.refreshedSession) {",
+          "    pm.collectionVariables.set('session', b.refreshedSession);",
+          "    console.log('session refreshed');",
+          "  }",
+          "} catch (e) { /* not JSON \u2014 redirects and 204s land here */ }"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8787",
+      "description": "wrangler dev"
+    },
+    {
+      "key": "session",
+      "value": "",
+      "description": "The relay_session cookie value; sent as a bearer token"
+    },
+    {
+      "key": "organizationId",
+      "value": "",
+      "description": "Captured by 'List workspaces'"
+    },
+    {
+      "key": "workspaceId",
+      "value": "",
+      "description": "Captured by 'List workspaces'"
+    },
+    {
+      "key": "invitationId",
+      "value": "",
+      "description": "Captured by 'List pending'"
+    },
+    {
+      "key": "pkceVerifier",
+      "value": ""
+    },
+    {
+      "key": "pkceChallenge",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1 \u00b7 Signing in",
+      "description": "AuthKit owns the round trip, so a session cannot be minted from Postman. Two of these are browser-only and are here to be read, not sent.\n\n**The practical path:** run `pnpm dev`, sign in at http://localhost:5173, then copy the `relay_session` cookie value into the collection's `session` variable. The server accepts the same sealed value as `Authorization: Bearer`, so everything else here then works.",
+      "item": [
+        {
+          "name": "Login (browser) \u2014 open in a browser, not here",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "303 to AuthKit. Sets `relay_oauth`, a short-lived cookie holding the state this browser must send back \u2014 `/auth/callback` refuses anything else, which is what stops a login CSRF.\n\nPostman will follow the redirect to WorkOS and you will get their sign-in HTML. That is expected; finish the flow in a real browser.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 302 or 303', () => pm.expect(pm.response.code).to.be.oneOf([200, 302, 303]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login (desktop PKCE) \u2014 mints a verifier for the next request",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login?surface=desktop&challenge={{pkceChallenge}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"],
+              "query": [
+                {
+                  "key": "surface",
+                  "value": "desktop"
+                },
+                {
+                  "key": "challenge",
+                  "value": "{{pkceChallenge}}"
+                }
+              ]
+            },
+            "description": "The desktop shell holds the PKCE verifier and sends only its S256 challenge, so the code that comes back can be redeemed by nothing else.\n\nThe pre-request script generates a fresh verifier/challenge pair into collection variables. Open the resulting URL in a browser, sign in, and the handoff page hands you a `code` \u2014 paste it into **Exchange**.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// PKCE S256, the way the desktop shell does it.",
+                  "const CryptoJS = require('crypto-js');",
+                  "const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';",
+                  "let verifier = '';",
+                  "for (let i = 0; i < 64; i++) verifier += chars[Math.floor(Math.random() * chars.length)];",
+                  "const b64url = (w) => CryptoJS.enc.Base64.stringify(w)",
+                  "  .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+                  "pm.collectionVariables.set('pkceVerifier', verifier);",
+                  "pm.collectionVariables.set('pkceChallenge', b64url(CryptoJS.SHA256(verifier)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Callback \u2014 browser-only",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/callback?code=&state=",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "callback"],
+              "query": [
+                {
+                  "key": "code",
+                  "value": ""
+                },
+                {
+                  "key": "state",
+                  "value": ""
+                }
+              ]
+            },
+            "description": "WorkOS redirects here. Needs the `relay_oauth` cookie set by `/auth/login` in the **same** browser, so sending it from Postman lands on `/sign-in?error=state_mismatch` by design.\n\nBrowser surface: exchanges the code and sets `relay_session`.\nDesktop surface: returns the handoff HTML instead, because only the shell holds the verifier.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 303', () => pm.expect(pm.response.code).to.be.oneOf([303]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Exchange (desktop) \u2014 code + verifier \u2192 sealed session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/exchange",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "exchange"]
+            },
+            "description": "Redeems the code, proving possession of the verifier whose challenge went out with the authorize request. Returns `{ sealedSession, user }`.\n\nOn success the test script writes `sealedSession` into `{{session}}` \u2014 after this, every other request in the collection is authenticated.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"PASTE_CODE_FROM_HANDOFF\",\n  \"verifier\": \"{{pkceVerifier}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 401', () => pm.expect(pm.response.code).to.be.oneOf([200, 401]));",
+                  "if (pm.response.code === 200) {",
+                  "  const b = pm.response.json();",
+                  "  pm.collectionVariables.set('session', b.sealedSession);",
+                  "  pm.test('a seal came back', () => pm.expect(b.sealedSession).to.be.a('string'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2 \u00b7 Session and tenancy",
+      "description": "Everything here needs `{{session}}`. A 401 is a normal answer, not a failure \u2014 it is what every authorisation decision downstream keys off.",
+      "item": [
+        {
+          "name": "Who am I",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/session",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "session"]
+            },
+            "description": "The session is `{user_id, organization_id}` and nothing else \u2014 **workspace is never in it** (invariant 3). Slack put it there, it became their shard key, and they spent years unwinding it.\n\nRoles come from our Postgres mirror rather than the seal, so a role change shows up immediately instead of on the next token refresh."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 401', () => pm.expect(pm.response.code).to.be.oneOf([200, 401]));",
+                  "// A refreshed access token comes back in the body for bearer callers.",
+                  "// Roll {{session}} forward so the collection keeps working across a token expiry.",
+                  "try {",
+                  "  const b = pm.response.json();",
+                  "  if (b && b.refreshedSession) {",
+                  "    pm.collectionVariables.set('session', b.refreshedSession);",
+                  "    console.log('session refreshed');",
+                  "  }",
+                  "} catch (e) { /* not JSON \u2014 redirects and 204s land here */ }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Sign up \u2014 create an org and its default workspace",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/signup",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "signup"]
+            },
+            "description": "The single signup path \u2014 solo, startup and enterprise alike:\n\n`org \u2192 org membership (owner) \u2192 default workspace \u2192 workspace membership (admin) \u2192 actor`\n\nThe actor is written inside the same advisory-locked transaction, because an account without one is real and cannot be added to any room.\n\nSerialised per user with a Postgres advisory lock: creating a WorkOS organization is **not** idempotent \u2014 verified against the live API, where two requests with the same `Idempotency-Key` produced two organizations \u2014 and nothing in the product can merge duplicates. Call it twice; the second finds the first and reuses it.\n\nRe-issues the session into the new org, so the response carries a fresh seal.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Acme\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 202 or 400 or 401 or 502', () => pm.expect(pm.response.code).to.be.oneOf([200, 202, 400, 401, 502]));",
+                  "// A refreshed access token comes back in the body for bearer callers.",
+                  "// Roll {{session}} forward so the collection keeps working across a token expiry.",
+                  "try {",
+                  "  const b = pm.response.json();",
+                  "  if (b && b.refreshedSession) {",
+                  "    pm.collectionVariables.set('session', b.refreshedSession);",
+                  "    console.log('session refreshed');",
+                  "  }",
+                  "} catch (e) { /* not JSON \u2014 redirects and 204s land here */ }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List workspaces I can open",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/workspaces",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "workspaces"]
+            },
+            "description": "One row per **workspace membership**, not per organization: being in the org is not being in the workspace (invariant 5). Each row carries its organization so the client knows whether opening it is a navigation or a session re-issue.\n\nCaptures the first `organizationId` into `{{organizationId}}` for the switch below."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 401', () => pm.expect(pm.response.code).to.be.oneOf([200, 401]));",
+                  "// A refreshed access token comes back in the body for bearer callers.",
+                  "// Roll {{session}} forward so the collection keeps working across a token expiry.",
+                  "try {",
+                  "  const b = pm.response.json();",
+                  "  if (b && b.refreshedSession) {",
+                  "    pm.collectionVariables.set('session', b.refreshedSession);",
+                  "    console.log('session refreshed');",
+                  "  }",
+                  "} catch (e) { /* not JSON \u2014 redirects and 204s land here */ }",
+                  "if (pm.response.code === 200) {",
+                  "  const w = pm.response.json().workspaces || [];",
+                  "  if (w.length) {",
+                  "    pm.collectionVariables.set('organizationId', w[0].organizationId);",
+                  "    pm.collectionVariables.set('workspaceId', w[0].workspaceId);",
+                  "  }",
+                  "  pm.test('every row names its organization', () =>",
+                  "    w.forEach((x) => pm.expect(x.organizationId).to.be.a('string')));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create another workspace",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/workspaces",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "workspaces"]
+            },
+            "description": "In the organization the session already names. No WorkOS call and no re-issued session \u2014 a workspace is ours, nothing upstream knows about it, and workspace is navigation state rather than a claim.\n\nThe creator joins as `admin` and is the only member: a workspace is not visible to the rest of the org by being created. 403 unless you may invite.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Design\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201 or 400 or 401 or 403', () => pm.expect(pm.response.code).to.be.oneOf([201, 400, 401, 403]));",
+                  "// A refreshed access token comes back in the body for bearer callers.",
+                  "// Roll {{session}} forward so the collection keeps working across a token expiry.",
+                  "try {",
+                  "  const b = pm.response.json();",
+                  "  if (b && b.refreshedSession) {",
+                  "    pm.collectionVariables.set('session', b.refreshedSession);",
+                  "    console.log('session refreshed');",
+                  "  }",
+                  "} catch (e) { /* not JSON \u2014 redirects and 204s land here */ }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Switch organization",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/switch",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "switch"]
+            },
+            "description": "Re-issues the session rather than editing a claim, because the target org's authentication requirements may differ \u2014 an org enforcing SSO will reject a session established by password, and the only way in is a fresh IdP round trip.\n\nMembership is checked against our mirror, not WorkOS: same data, already local, and this must not become a network round trip on a menu click.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organizationId\": \"{{organizationId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 400 or 401 or 403', () => pm.expect(pm.response.code).to.be.oneOf([200, 400, 401, 403]));",
+                  "// A refreshed access token comes back in the body for bearer callers.",
+                  "// Roll {{session}} forward so the collection keeps working across a token expiry.",
+                  "try {",
+                  "  const b = pm.response.json();",
+                  "  if (b && b.refreshedSession) {",
+                  "    pm.collectionVariables.set('session', b.refreshedSession);",
+                  "    console.log('session refreshed');",
+                  "  }",
+                  "} catch (e) { /* not JSON \u2014 redirects and 204s land here */ }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Log out",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "logout"]
+            },
+            "description": "With `Authorization` set: revokes the session upstream and returns 204. The caller holds the seal, so there is no cookie to clear.\n\nWithout it: 303 to WorkOS's logout URL, clearing `relay_session`.\n\nClears `{{session}}` afterwards, so run it last."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204 or 303', () => pm.expect(pm.response.code).to.be.oneOf([204, 303]));",
+                  "pm.collectionVariables.set('session', '');"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3 \u00b7 Invitations",
+      "description": "WorkOS owns invitations \u2014 they are a first-class resource there, and acceptance happens in their UI, so there is no request of ours to hook. It surfaces later as an `organization_membership.created` webhook.",
+      "item": [
+        {
+          "name": "List pending",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/invitations",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "invitations"]
+            },
+            "description": "Pending invitations for the organization the session names. 400 if it names none."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 400 or 401', () => pm.expect(pm.response.code).to.be.oneOf([200, 400, 401]));",
+                  "if (pm.response.code === 200) {",
+                  "  const i = pm.response.json().invitations || [];",
+                  "  if (i.length) pm.collectionVariables.set('invitationId', i[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Invite someone",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/invitations",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "invitations"]
+            },
+            "description": "`role` is one of `admin`, `member`, `guest`. 403 unless you may invite.\n\n**A guest is not a lesser member** \u2014 they get an org membership and *no* workspace membership, and see only the rooms they are explicitly added to. That is why guests never needed FGA: the check stays a primary-key lookup.\n\nNote the invitation creates a `pending` membership. No workspace access and no actor exist until it flips to `active` \u2014 a revoked invitation that had already granted a workspace row was a real bug, found exactly that way.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"someone@example.com\",\n  \"role\": \"member\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201 or 400 or 401 or 403 or 502', () => pm.expect(pm.response.code).to.be.oneOf([201, 400, 401, 403, 502]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revoke",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/invitations",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "invitations"]
+            },
+            "description": "204 on success. 403 unless you may invite.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"{{invitationId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204 or 400 or 401 or 403', () => pm.expect(pm.response.code).to.be.oneOf([204, 400, 401, 403]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4 \u00b7 Webhooks",
+      "description": "WorkOS is upstream and Postgres is a read replica (invariant 4). These rows are written by this handler and by signup, and nowhere else.\n\n**Locally this is unreachable from WorkOS** without a tunnel \u2014 `pnpm tunnel` sets one up and re-points WorkOS in one step. The request below is here to show the shape and to prove the signature check rejects an unsigned body.",
+      "item": [
+        {
+          "name": "Deliver an event (unsigned \u2014 expect 401)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "workos-signature",
+                "value": "t=0, v1=not-a-real-signature"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/workos",
+              "host": ["{{baseUrl}}"],
+              "path": ["webhooks", "workos"]
+            },
+            "description": "401, and deliberately without saying why \u2014 a verification oracle is a gift to whoever is probing.\n\nFields arrive **camelCase** (`firstName`, not `first_name`) because `constructEvent` deserialises them. An earlier version read snake_case and silently mirrored every name as null; the tests passed because they asserted the same wrong shape.\n\nHandled: `user.created/updated/deleted`, `organization.created/updated/deleted`, `organization_membership.created/updated/deleted`. Anything else gets a 200 \u2014 anything other than 200 makes WorkOS retry forever.\n\n`user.updated` also carries the rename out to `actors.display_name`, which is a projection of this mirror maintained by this handler alone.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event\": \"user.updated\",\n  \"data\": {\n    \"id\": \"user_01EXAMPLE\",\n    \"email\": \"someone@example.com\",\n    \"firstName\": \"Ada\",\n    \"lastName\": \"Lovelace\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an unsigned body is refused', () => pm.response.to.have.status(401));",
+                  "pm.test('and says nothing about why', () =>",
+                  "  pm.expect(pm.response.text()).to.not.match(/secret|expected|timestamp/i));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
