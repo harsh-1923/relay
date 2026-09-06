@@ -5,6 +5,7 @@ import { installAuth } from './auth';
 import { watchChrome } from './chrome';
 import { installDeepLinks, registerProtocol } from './deep-links';
 import { installLinks } from './links';
+import { installPersistence } from './persistence';
 
 /**
  * The Electron shell. It owns the window, the webview hardening and OS integration — it does
@@ -12,11 +13,39 @@ import { installLinks } from './links';
  * production, from a bundle on local disk (Phase 11).
  */
 
-const UI_URL = process.env.RELAY_UI_URL ?? 'http://localhost:5173';
+/**
+ * Follows the dev server: `RELAY_HTTPS=1` puts Vite on HTTPS for HTTP/2 (five shapes per room
+ * against a six-connection HTTP/1.1 budget), and the shell has to load the same scheme.
+ */
+const HTTPS = !!process.env.RELAY_HTTPS;
+const UI_URL = process.env.RELAY_UI_URL ?? `${HTTPS ? 'https' : 'http'}://localhost:5173`;
 const icon = nativeImage.createFromPath(join(__dirname, '../../resources/icon.png'));
 
 let mainWindow: BrowserWindow | null = null;
 registerProtocol();
+
+/**
+ * Trust the dev server's self-signed certificate, and nothing else — only when HTTPS is on.
+ *
+ * `certificate-error` is the scoped check: it sees the URL and refuses anything that is not
+ * the dev server. But it fires *above* the TLS handshake, and Chromium aborts a self-signed
+ * connection below that with `ERR_CERT_AUTHORITY_INVALID` before the event is raised.
+ * `--allow-insecure-localhost` no longer reliably stops that in current Chromium, so this
+ * uses `--ignore-certificate-errors`, which does — and which is exactly why it is gated on an
+ * explicit opt-in *and* on not being packaged. It must never be the default.
+ */
+if (!app.isPackaged && HTTPS) {
+  app.commandLine.appendSwitch('ignore-certificate-errors');
+
+  app.on('certificate-error', (event, _webContents, url, _error, _cert, callback) => {
+    const { hostname, origin } = new URL(url);
+    const trusted =
+      origin === new URL(UI_URL).origin && (hostname === 'localhost' || hostname === '127.0.0.1');
+    if (!trusted) return callback(false);
+    event.preventDefault();
+    callback(true);
+  });
+}
 
 // A losing second instance forwards its URL to the first and quits, so there is nothing more
 // for it to set up.
@@ -112,7 +141,14 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
+  // Before the first window: the renderer asks for persistence as soon as it mounts, and an
+  // unhandled IPC channel is an error rather than a wait. A failure here is not fatal — the
+  // app still works, it just has no local cache — so it is logged and stepped over.
+  await installPersistence().catch((e: unknown) => {
+    console.error('[relay] local persistence unavailable:', e);
+  });
+
   // BrowserWindow's `icon` only reaches Windows/Linux; the Dock reads whatever the app bundle
   // declares (Phase 11) and ignores it in dev unless set here.
   app.dock?.setIcon(icon);

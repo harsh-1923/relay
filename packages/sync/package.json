@@ -16,5 +16,11 @@
   "devDependencies": {
     "@relay/tsconfig": "workspace:*",
     "vitest": "^5.0.0"
+  },
+  "dependencies": {
+    "@tanstack/db": "0.8.7",
+    "@tanstack/db-sqlite-persistence-core": "0.2.20",
+    "@tanstack/electric-db-collection": "0.4.7",
+    "@tanstack/electron-db-sqlite-persistence": "0.1.32"
   }
 }

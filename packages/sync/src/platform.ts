@@ -56,6 +56,14 @@ export interface RelayBridge {
    *   first push may already have gone.
    * `onInsetChange`: fires on fullscreen transitions, where the controls disappear entirely.
    */
+  /**
+   * `invoke`: one request/response call carrying the SQLite persistence protocol. The database
+   *   lives in the main process; the renderer holds only this function and rebuilds an adapter
+   *   from it. Absent on the browser surface, where persistence is OPFS or nothing.
+   */
+  persistence: {
+    invoke(channel: string, request: unknown): Promise<unknown>;
+  };
   chrome: {
     inset(): number;
     onInsetChange(cb: (inset: number) => void): () => void;

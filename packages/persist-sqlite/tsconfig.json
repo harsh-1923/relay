@@ -1,5 +1,9 @@
 {
   "extends": "@relay/tsconfig/node.json",
-  "compilerOptions": { "noEmit": true },
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "lib": ["ES2023", "ESNext.Disposable"]
+  },
   "include": ["src", "test"]
 }

@@ -1,3 +1,6 @@
-// TanStack DB collections over Electric shapes. Phase 2.
+// TanStack DB collections over Electric shapes, the registry that owns their lifetime, and
+// the local persistence they are wrapped in.
 
-export {};
+export * from './collections/index';
+export * from './persister';
+export * from './subscriptions';

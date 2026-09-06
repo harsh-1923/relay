@@ -16,5 +16,8 @@
     "electron": "^44.2.0",
     "vitest": "^5.0.0"
   },
-  "main": "dist/main/index.js"
+  "main": "dist/main/index.js",
+  "dependencies": {
+    "@relay/persist-sqlite": "workspace:*"
+  }
 }

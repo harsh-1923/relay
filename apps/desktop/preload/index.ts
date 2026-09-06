@@ -23,8 +23,11 @@ ipcRenderer.on('chrome:inset-changed', (_e: IpcRendererEvent, next: number) => {
  * bundle declares the *minimum* it needs, so bump this on any change to what is exposed —
  * additions included — or a bundle cannot express that it requires them.
  */
+/** The one IPC channel the renderer may reach, and the name the persistence library uses. */
+const PERSISTENCE_CHANNEL = 'tanstack-db:sqlite-persistence';
+
 contextBridge.exposeInMainWorld('relay', {
-  bridgeVersion: 6,
+  bridgeVersion: 7,
   platform: process.platform,
   auth: {
     /** Opens the system browser. Adds an account rather than replacing the active one. */
@@ -47,6 +50,31 @@ contextBridge.exposeInMainWorld('relay', {
       ipcRenderer.on('auth:changed', handler);
       return () => ipcRenderer.off('auth:changed', handler);
     },
+  },
+  /**
+   * Local persistence, as a single request/response function.
+   *
+   * Exactly one thing crosses the bridge: an `invoke` that carries a serialisable envelope
+   * each way. The database handle stays in the main process, which is what keeps
+   * `contextIsolation` meaningful — hanging a SQLite connection off `window` would hand the
+   * renderer, and anything running in it, direct file access.
+   *
+   * `@tanstack/electron-db-sqlite-persistence` defines both ends of this protocol; the
+   * channel name is its default, and the renderer reconstructs a persistence adapter from
+   * this one function.
+   */
+  persistence: {
+    /**
+     * `(channel, request)` because that is how `@tanstack/electron-db-sqlite-persistence`
+     * calls it — and the channel is **checked, not forwarded**. Proxying whatever channel the
+     * renderer names would hand it every handler the main process has registered, including
+     * `auth:token`; contextIsolation would then be decoration. So this bridge reaches exactly
+     * one channel and rejects anything else.
+     */
+    invoke: (channel: string, request: unknown): Promise<unknown> =>
+      channel === PERSISTENCE_CHANNEL
+        ? ipcRenderer.invoke(PERSISTENCE_CHANNEL, request)
+        : Promise.reject(new Error(`relay: refusing to invoke channel "${channel}"`)),
   },
   chrome: {
     // Synchronous, so the first paint already clears the window controls. Deriving it here
