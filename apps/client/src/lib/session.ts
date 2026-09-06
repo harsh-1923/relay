@@ -39,6 +39,8 @@ export interface Account {
 /**
  * `createWorkspace`: creates the org and its default workspace. Resolves to an error message, or null.
  * `workspaces`: everything this user can switch into. Empty until loaded.
+ * `workspacesPending`: still loading — the difference between "no workspace yet" and "not
+ *   asked yet", which `/` has to tell apart before it decides where to send you.
  * `switchTo`: moves the session into another org. Resolves to an error message, or null.
  * `accounts`: signed-in accounts. Empty on the browser, which holds one session by construction.
  * `switchAccount`: becomes another signed-in account. Desktop only.
@@ -51,6 +53,7 @@ export interface SessionApi {
   signOut: () => void;
   createWorkspace: (name: string) => Promise<string | null>;
   workspaces: SwitchTarget[];
+  workspacesPending: boolean;
   switchTo: (organizationId: string) => Promise<string | null>;
   accounts: Account[];
   switchAccount: (userId: string) => void;
@@ -241,6 +244,8 @@ export function useSession(): SessionApi {
     signOut,
     createWorkspace: createWorkspace.mutateAsync,
     workspaces: workspaces.data ?? [],
+    // `enabled` keeps this pending while there is no session, so pair it with the fetch state.
+    workspacesPending: workspaces.isPending && workspaces.fetchStatus !== 'idle',
     switchTo: switchTo.mutateAsync,
     accounts: accounts.data ?? [],
     switchAccount,

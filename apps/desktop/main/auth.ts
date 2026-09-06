@@ -1,7 +1,7 @@
-import { app, ipcMain, shell, type BrowserWindow } from 'electron';
-import { join } from 'node:path';
+import { ipcMain, shell, type BrowserWindow } from 'electron';
 
 import * as accounts from './accounts';
+import { onDeepLink } from './deep-links';
 import { challengeFor, newVerifier } from './pkce';
 
 /**
@@ -16,24 +16,6 @@ import { challengeFor, newVerifier } from './pkce';
  * The sealed session lives on disk encrypted by `safeStorage`, which is the OS keychain
  * on macOS and DPAPI on Windows. The renderer never sees the file; it asks over the bridge.
  */
-
-const PROTOCOL = 'relay';
-
-/**
- * Registers the protocol and wires the deep-link entry points. Call before `app.whenReady`.
- *
- * In development the app is the bare Electron binary, so macOS must be told which script to
- * launch it with; a packaged app registers plainly.
- */
-export function registerProtocol() {
-  if (process.defaultApp && process.argv[1]) {
-    app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [
-      join(process.cwd(), process.argv[1]),
-    ]);
-  } else {
-    app.setAsDefaultProtocolClient(PROTOCOL);
-  }
-}
 
 export interface AuthChange {
   error?: string;
@@ -60,15 +42,8 @@ export function installAuth(
     w.focus();
   };
 
-  async function handleDeepLink(raw: string) {
-    let url: URL;
-    try {
-      url = new URL(raw);
-    } catch {
-      return;
-    }
-    if (url.protocol !== `${PROTOCOL}:` || url.host !== 'auth' || url.pathname !== '/callback')
-      return;
+  async function handleCallback(url: URL) {
+    if (url.pathname !== '/callback') return;
 
     const code = url.searchParams.get('code');
     if (!code) return notify({ error: 'The browser returned no authorization code.' });
@@ -102,21 +77,9 @@ export function installAuth(
     }
   }
 
-  // macOS delivers the URL to the running instance.
-  app.on('open-url', (event, url) => {
-    event.preventDefault();
-    void handleDeepLink(url);
-  });
-
-  // Windows and Linux launch a second instance with the URL in argv; forward it and quit.
-  if (!app.requestSingleInstanceLock()) {
-    app.quit();
-    return;
-  }
-  app.on('second-instance', (_event, argv) => {
-    const url = argv.find((a) => a.startsWith(`${PROTOCOL}://`));
-    if (url) void handleDeepLink(url);
-  });
+  // Only `relay://auth/...`. A navigation link reaching this handler would be dropped at the
+  // verifier gate below, which is why the two are registered separately (N5).
+  onDeepLink('auth', (url) => void handleCallback(url));
 
   ipcMain.handle('auth:sign-in', () => {
     pendingVerifier = newVerifier();

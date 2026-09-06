@@ -1,7 +1,10 @@
 import { app, BrowserWindow, nativeImage, shell } from 'electron';
 import { join } from 'node:path';
 
-import { installAuth, registerProtocol } from './auth';
+import { installAuth } from './auth';
+import { watchChrome } from './chrome';
+import { installDeepLinks, registerProtocol } from './deep-links';
+import { installLinks } from './links';
 
 /**
  * The Electron shell. It owns the window, the webview hardening and OS integration — it does
@@ -14,7 +17,13 @@ const icon = nativeImage.createFromPath(join(__dirname, '../../resources/icon.pn
 
 let mainWindow: BrowserWindow | null = null;
 registerProtocol();
-installAuth(UI_URL, () => mainWindow, createWindow);
+
+// A losing second instance forwards its URL to the first and quits, so there is nothing more
+// for it to set up.
+if (installDeepLinks()) {
+  installAuth(UI_URL, () => mainWindow, createWindow);
+  installLinks(() => mainWindow, createWindow);
+}
 
 /** Blocked outright. The desktop app sits inside the user's network, so an internal URL is a
  *  genuine pivot, not a broken link (H10). */
@@ -57,6 +66,9 @@ function createWindow(): BrowserWindow {
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null;
   });
+
+  // Fullscreen hides the traffic lights, so the renderer has to be told to reclaim the space.
+  watchChrome(window);
 
   /**
    * One choke point for every webview that will ever exist. With panels created from JSX,

@@ -8,7 +8,7 @@ import base from '@relay/eslint-config/base';
  * pattern that applies to its files, composed from the shared arrays.
  */
 
-const APPS = ['site', 'web', 'desktop', 'server', 'broker', 'runtime'];
+const APPS = ['site', 'client', 'desktop', 'server', 'broker', 'runtime'];
 
 /** Invariant 9 — dependencies point from apps into packages, never sideways between apps. */
 const crossApp = APPS.map((app) => ({
@@ -49,8 +49,27 @@ export default [
   },
 
   {
-    files: ['apps/web/**/*.{ts,tsx}', 'apps/site/**/*.{ts,tsx}'],
+    files: ['apps/client/**/*.{ts,tsx}', 'apps/site/**/*.{ts,tsx}'],
     rules: restrict([...crossApp, ...noNativeSqlite]),
+  },
+
+  /**
+   * One module spells the URL grammar. A route literal anywhere else is how two spellings of
+   * the same address start to drift — and `tabs.location` persists them, so a stray one
+   * outlives the release that introduced it. See `docs/plans/navigation.md` (D4).
+   */
+  {
+    files: ['apps/client/src/**/*.{ts,tsx}'],
+    ignores: ['apps/client/src/lib/paths.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'Literal[value=/^\\/(w\\/|r\\/|settings|sign-in)/]',
+          message: 'Route literals belong in lib/paths.ts. Use paths.* or patterns.*.',
+        },
+      ],
+    },
   },
 
   {
