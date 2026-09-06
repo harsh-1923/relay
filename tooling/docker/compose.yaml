@@ -1,0 +1,61 @@
+# Local services that are not Supabase's.
+#
+# Postgres comes from `supabase start`; this joins the network it already created and talks to
+# the database container directly, rather than back out through the published port. The network
+# name is `supabase_network_<project_id>` — see `project_id` in `supabase/config.toml`.
+#
+# Started by `pnpm run up`, which brings Supabase up first: this compose file assumes that
+# network exists and will refuse to start without it.
+
+name: relay
+
+services:
+  # ── Electric ─────────────────────────────────────────────────────────────────
+  #
+  # Read-path sync. Self-hosted because Electric Cloud is winding down after the Databricks
+  # acquisition — the engine stays Apache 2.0, the managed offering does not.
+  #
+  # Stateful, and that is the whole operational cost of this decision: it caches shape logs and
+  # metadata on disk, and that state must stay consistent with the replication slot it owns. The
+  # volume below is what makes a restart cheap instead of a full re-sync for every client.
+  electric:
+    image: electricsql/electric:1.8.0
+    container_name: relay_electric
+    restart: unless-stopped
+    environment:
+      # Direct connection, never a pooler: poolers do not carry logical replication. Supabase's
+      # own pooler is disabled locally anyway, but this is the line that matters in production.
+      DATABASE_URL: postgresql://postgres:postgres@supabase_db_relay:5432/postgres
+
+      # Electric's HTTP API is public by default and exposes anything its database user can
+      # read. The shape proxy adds this header; a client must never see it. Local-only value —
+      # deployed environments take it from the secret store.
+      ELECTRIC_SECRET: local-dev-only-not-a-secret
+
+      ELECTRIC_STORAGE_DIR: /var/lib/electric/persistent
+      ELECTRIC_PORT: 3000
+
+      # Names its own slot and publication so a second Electric against this database (a test
+      # run, a colleague's branch) cannot silently adopt ours.
+      ELECTRIC_REPLICATION_STREAM_ID: relay_local
+    ports:
+      - '54330:3000'
+    volumes:
+      - electric_data:/var/lib/electric/persistent
+    networks:
+      - supabase
+    healthcheck:
+      # 200 `active` once replication is streaming; 202 `waiting`/`starting` before that.
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:3000/v1/health']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  electric_data:
+
+networks:
+  supabase:
+    external: true
+    name: supabase_network_relay

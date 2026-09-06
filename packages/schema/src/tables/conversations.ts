@@ -24,8 +24,9 @@ import { workspaces } from './workspaces';
  * conflating type with visibility. `kind` says what this *is* and never changes;
  * `visibility` says who may read it and is the only thing a promotion touches.
  *
- * `sync_floor` is read by nothing here. It bounds the message shape, because an Electric
- * where clause cannot call `now()` and has no LIMIT — see `docs/plans/local-first.md` D3.
+ * `sync_floor` is read by nothing here. It is the bootstrap floor — how far back a new device
+ * fetches this conversation on first sync — and a column rather than a policy because the
+ * right answer differs per conversation. See `docs/plans/local-first.md`.
  */
 export const conversations = pgTable(
   'conversations',

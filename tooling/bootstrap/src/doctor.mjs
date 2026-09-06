@@ -181,6 +181,45 @@ if (!alive.ok) {
   }
 }
 
+// ── electric ──────────────────────────────────────────────────────────────────
+group('electric');
+
+const health = sh('curl', ['-fsS', '-m', '3', 'http://localhost:54330/v1/health']);
+if (!health.ok) {
+  bad('not reachable on :54330', 'Run `pnpm run up services`.');
+} else {
+  const status = (health.out.match(/"status"\s*:\s*"(\w+)"/) ?? [])[1];
+  if (status === 'active') ok('reachable on :54330 — replication active');
+  else meh(`reachable, but status is "${status}"`, 'Still connecting. Re-run in a few seconds.');
+
+  /**
+   * H1, the hazard most likely to cause an unrecoverable incident. An inactive slot holds WAL
+   * forever, and Supabase disk grows and never shrinks — so an Electric that has stopped while
+   * its slot remains is worse than one that was never started. `wal_status` says whether the
+   * database is still keeping every segment the slot has not consumed.
+   */
+  const slot = psql(
+    // `|` rather than a space: pg_size_pretty returns "232 bytes", which a space would split.
+    "select active || '|' || coalesce(wal_status,'?') || '|' || " +
+      "coalesce(pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)),'0') " +
+      "from pg_replication_slots where slot_name like 'electric%'",
+  );
+  if (!slot.ok || !slot.out) {
+    meh('no replication slot yet', 'Electric creates it on first connect.');
+  } else {
+    const [active, walStatus, lag] = slot.out.split('|');
+    if (active !== 'true')
+      bad(
+        `replication slot is INACTIVE (retaining ${lag} of WAL)`,
+        'Nothing is consuming it and the WAL will grow without bound. Start Electric, or\n    ' +
+          "drop the slot: select pg_drop_replication_slot('electric_slot_relay_local');",
+      );
+    else if (walStatus !== 'reserved')
+      bad(`slot wal_status is "${walStatus}" (retaining ${lag})`, 'Replication is falling behind.');
+    else ok(`slot active, ${lag} of WAL retained`);
+  }
+}
+
 // ── workos ────────────────────────────────────────────────────────────────────
 const server = readEnv(join(ROOT, 'apps/server/.env'));
 const base = (server.WORKOS_API_URL ?? '').replace(/\/$/, '');

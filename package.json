@@ -20,7 +20,7 @@
     "dev:web": "pnpm --parallel --filter @relay/server --filter @relay/client dev",
     "dev:shell": "pnpm --filter @relay/desktop dev",
     "tunnel": "node tooling/bootstrap/src/tunnel.mjs",
-    "services:stop": "supabase stop",
+    "services:stop": "docker compose -f tooling/docker/compose.yaml down && supabase stop",
     "db:reset": "supabase db reset",
     "build": "pnpm -r --if-present build",
     "lint": "eslint .",

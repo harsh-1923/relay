@@ -1,443 +1,519 @@
-# Local-first — shapes, persistence, and how much history lives on the device
+# Local-first — Supabase, TanStack DB, and a sync source we own
 
 > Working plan, and the sibling of [`rooms.md`](./rooms.md). That document decides the tables;
 > this one decides **what syncs, what persists, and what a user can still see with the network
-> off.** They are deliberately separate: the schema can be built and reviewed without settling
-> any of this, and this can be settled without reopening the schema.
+> off.** They are deliberately separate so each can be picked up alone: nothing here changes
+> the schema, and the schema can be built without settling any of this.
 >
-> Every claim here about what Electric, TanStack DB or the persistence adapters actually do was
-> verified on 2026-09-06 against `electric.ax` and against the published packages — several of
-> them are undocumented and were read from source, with file and line cited. `ARCHITECTURE.md`
-> is treated as product intent, not as a technical reference; three places where it is wrong are
-> recorded in _Candidates_ at the bottom.
+> **This document reverses `ARCHITECTURE.md`'s Phase 2 decision.** Electric was chosen there;
+> this plan does not use it. The reasoning is in D1 and in _Rejected_, and the amendment
+> `ARCHITECTURE.md` needs is listed at the bottom — that file is edited in its own turn, and
+> reversing a load-bearing decision is exactly the kind of edit that should be.
+>
+> Every technical claim here was verified on 2026-09-06 against vendor documentation, published
+> packages, or a running spike — several by reading package source, because the behaviour was
+> undocumented. Where something is inferred rather than verified, it says so.
 
-**Done when:** launching with the network off shows rooms, messages and agent traces from disk;
-a relaunch resumes the shape log instead of re-reading it; a message written offline sends once
-on reconnect; and history a user has already read stays on their device.
+**Done when:** the app launches with the network off and renders every room the user is in, with
+its messages, from disk; a message written offline sends once on reconnect; an update to a room
+the user is _not_ looking at reaches their device and is there when they open that room later,
+offline; and adding a new synced table is a mechanical four-step change with no new decisions.
 
-**Scope:** shape definitions and the proxy that serves them, the sync window and the retained
-archive, the persistence stack on desktop and browser, and the write path's reconciliation.
-Not the room and chat schema (`rooms.md`), not the run lifecycle (Phase 5), not search ranking.
-
-**Order.** `rooms.md` goes first — it is schema, it blocks Phase 2, and nothing here changes it.
-This document is the second half, and its first real deadline is Phase 4.
+**Scope:** the sync endpoints, the two sync strategies and the rule for choosing between them,
+the client collections, the doorbell, the write path, and persistence on desktop and browser.
+Not the room and chat schema (`rooms.md`), not the run lifecycle (Phase 5), not search.
 
 ## Where things stand
 
-| #   | Step                                                        | State |
-| --- | ----------------------------------------------------------- | ----- |
-| 0   | Electric self-hosted locally, with slot alerting            | ☐     |
-| 1   | Shape definitions in `packages/schema`, server-side only    | ☐     |
-| 2   | Shape proxy: unseal → authorise → proxy                     | ☐     |
-| 3   | Subscription registry (effect-with-inverse) and its tiering | ☐     |
-| 4   | Persisted collections on Electron                           | ☐     |
-| 5   | The retained archive as a local-only collection             | ☐     |
-| 6   | `sync_floor` advance policy, server-side                    | ☐     |
-| 7   | Write path: mutation handlers returning txid                | ☐     |
-| 8   | Offline outbox                                              | ☐     |
-| 9   | Browser adapter and the degraded mode                       | ☐     |
+> **Superseded in part.** The engine decision in D1 was reversed again after a bet was taken on
+> self-hosting Electric — see the top of this file. The snapshot/cursor design below is retained
+> as the record of what a self-written sync source would have required, and as the fallback if
+> Electric is abandoned. What was actually built is in _Where things stand_.
 
-## What this inherits from `rooms.md`
+| #   | Step                                                        | State                                |
+| --- | ----------------------------------------------------------- | ------------------------------------ |
+| 0   | Persistence stack and `SyncConfig` verified by spike        | ✅                                   |
+| 1   | Electric self-hosted in the local stack, with slot alerting | ✅ `:54330`, `pnpm health` checks it |
+| 2   | Shape registry, server-side only                            | ✅ 7 shapes                          |
+| 3   | Shape proxy — unseal → authorise → forward                  | ✅ 13 tests vs real Electric         |
+| 4   | Collections + the subscription registry                     | ✅                                   |
+| 5   | **Render a room from synced data**                          | ✅ live insert and rename observed   |
+| 6   | HTTPS in dev, for HTTP/2                                    | ✅ see L10                           |
+| 7   | Persistence — `persistedCollectionOptions` on Electron      | ☐ Phase 4                            |
+| 8   | `POST /writes` with idempotency; outbox                     | ☐ Phase 3                            |
+| 9   | Room list, so a room is reachable without a URL             | ☐                                    |
 
-Three of that document's decisions are load-bearing here, and one column exists only for this
-one.
+## The requirements
 
-| From `rooms.md`                                           | Why it matters here                                                                                                                         |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| **D5** — the conversation, not the room, is the sync unit | Every message shape is `conversation_id = $1`. Privacy is structural: a private conversation is a different shape non-members never request |
-| **D6** — `messages` carries no `room_id`                  | Promotion moves a conversation between places without rewriting rows, so it never invalidates a shape's contents                            |
-| **D11** — UUIDv7 primary keys                             | Ids sort chronologically, so a sync floor is a primary-key range and a merged timeline is a sorted merge                                    |
-| **`conversations.sync_floor`**                            | Exists solely for D3 below. `rooms.md` carries the column; this document is the only thing that reads it                                    |
+Written down in the product's words, because the architecture is derived from them and the
+fifth one decided the engine.
 
-## The shapes
+1. Good user experience.
+2. The app opens and **instantly renders everything it had** when it was closed.
+3. All of that is readable **with no network**.
+4. New data needs the network — that is fine.
+5. **Updates sync regardless of which view is live.** A user in room 1 receives room 2's
+   updates, they land locally, and room 2 renders them later — offline, without ever having
+   been opened in between.
+6. Writes are **optimistic and feel instant**.
 
-Every where clause is row-local equality. No joins, no subqueries, nothing gated on a plan tier.
+Requirements 2, 3 and 6 are properties of the local store and the write queue. Requirement 5 is
+a property of the read path, and it is the one that separates the engines.
 
-| Shape                  | Where                                    | Shared by                         |
-| ---------------------- | ---------------------------------------- | --------------------------------- |
-| `actors`               | `organization_id = $1`                   | everyone in the org               |
-| `agents`               | `workspace_id = $1`                      | everyone in the workspace         |
-| `rooms`                | `id = $1`                                | every member                      |
-| `room_members`         | `room_id = $1`                           | every member                      |
-| `conversations`        | `room_id = $1 and visibility = 'shared'` | every member                      |
-| `messages`             | `conversation_id = $1 and id >= $floor`  | every member of that conversation |
-| `panels`               | `room_id = $1 and visibility = 'shared'` | every member                      |
-| a private conversation | `conversation_id = $1`                   | its members                       |
-| the directory (D2)     | `actor_id = $1`                          | one person                        |
+## The architecture
 
-`rooms.md` D1 is what keeps this list short: `actors` carries `display_name` and `avatar_url`,
-so it alone renders every name and avatar and `users` never has to sync.
+```
+ ┌──────────────────────────── device ─────────────────────────────┐
+ │  React ── useLiveQuery ── TanStack DB collections (one/table)    │
+ │                                  │                              │
+ │                     persistedCollectionOptions                  │
+ │                                  │                              │
+ │                     SQLite  (desktop: better-sqlite3 via IPC)   │
+ │                             (browser: wa-sqlite over OPFS)      │
+ │                                                                 │
+ │   SnapshotSource      MessagesSource      offline-transactions  │
+ └────────│──────────────────│──────────────────────│──────────────┘
+          │ GET /sync/snapshot│ GET /sync/messages   │ POST /writes
+          │   (ETag / 304)    │   ?after=<cursor>    │  (idempotent)
+          ▼                   ▼                      ▼
+ ┌─────────────────── Cloudflare Worker ───────────────────────────┐
+ │        unsealSession → actorFor → access.ts → Drizzle           │
+ └────────────────────────────┬────────────────────────────────────┘
+                              ▼
+                      Supabase Postgres
+                 triggers → realtime.send() ──► Realtime (doorbell)
+                                                    │
+                        device ◄────────────────────┘  "room X changed"
+```
+
+Three layers. Only the middle one is ours.
+
+| Layer         | Provides                                          | Comes from                                        |
+| ------------- | ------------------------------------------------- | ------------------------------------------------- |
+| Local store   | SQLite on device, cold start, cursor persistence  | `@tanstack/db-sqlite-persistence-core` + adapters |
+| **Read path** | **what reaches the device, and when**             | **a `SyncConfig` we write, two of them**          |
+| Write queue   | optimistic apply, durable retry, idempotency keys | `@tanstack/offline-transactions`                  |
 
 ## Decisions
 
-### D0 — Electric is self-hosted; Electric Cloud is winding down
+### D1 — The sync engine is a `SyncConfig` we write, over Supabase
 
-Electric was acquired by Databricks on 11 August 2026 and **Electric Cloud is winding down** —
-"Cloud users will need to self-host or move to another provider". No public shutdown date, and as
-of 2026-09-06 the docs still say Cloud is the recommended production path, which is worth knowing
-when reading them.
+`SyncConfig` is TanStack DB's public interface for a sync source — the one
+`electric-db-collection` itself implements. It hands the source `begin / write / commit /
+markReady / markError / truncate`, plus `exportSyncMeta` / `importSyncMeta`, which the persister
+stores beside the rows and replays on launch. Verified by spike: a source written by hand in a
+few lines persisted, accumulated writes across batches, treated a re-applied key as a no-op, and
+survived a sibling collection's truncate untouched.
 
-The engine stays Apache 2.0, TanStack DB explicitly included, and the read-path economics are a
-property of the protocol rather than the host — so the decision holds. **PowerSync was re-checked
-rather than inherited**, because the reason recorded against it turned out to be false: it was
-rejected for "WASM SQLite / OPFS pain", and TanStack's own browser persistence is wa-sqlite over
-OPFS via PowerSync's fork. The real reason is better: PowerSync holds a persistent stream per
-client and its buckets are scoped per user, not shared — so nothing collapses at a CDN and cost
-grows with concurrent clients, which is Zero's curve. Their figure is tens of thousands of
-concurrent clients per service instance; Electric's is 100k–1M on one server.
+So the local-first layer does not come from an engine. It comes from TanStack, and it is the same
+whichever source feeds it. What an engine would provide is the _read path_ — and for these
+requirements, no engine on the market provides it better than a source we write. The reasons,
+briefly here and fully in _Rejected_:
 
-**What self-hosting actually needs**, from the deployment guide:
+- **Electric** fights requirement 5. Shapes are per (table, filter), so background-syncing 40
+  rooms is ~200 subscriptions, and the architecture's own answer was a tiering policy that
+  explicitly drops rooms from live sync. Its managed offering is also winding down after the
+  Databricks acquisition, leaving a stateful Elixir service to run ourselves.
+- **PowerSync** fits requirement 5 natively but holds a persistent stream per client with
+  per-user buckets — a second vendor whose cost scales with concurrent clients.
+- **Zero** is the heaviest infrastructure of any option, self-host only, and query-driven.
+- **Convex** has no durable local store; a cold start offline shows nothing.
 
-|                        |                                                                                                      |
-| ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| Image                  | `electricsql/electric`                                                                               |
-| `DATABASE_URL`         | **Direct** connection. Poolers do not carry logical replication                                      |
-| `ELECTRIC_STORAGE_DIR` | A persistent volume — shape logs and metadata live on disk                                           |
-| `ELECTRIC_SECRET`      | Added by the proxy, never sent by a client                                                           |
-| Postgres               | 14+, `wal_level=logical`, a user with `REPLICATION`. Publication and slot auto-created if privileged |
-| Sizing                 | Disk speed first, then memory, then CPU. NVMe preferred                                              |
-| Health                 | `/v1/health` → 200 `active`, 202 `waiting`/`starting`                                                |
+**And the decision is reversible in a way adopting an engine is not.** The swap point is one
+`SyncConfig` per collection. Schema, persistence, outbox and `access.ts` are unchanged whichever
+source sits there. If per-user catch-up ever becomes the top entry in `pg_stat_statements`, the
+engine gets chosen then, with telemetry, instead of now, with estimates.
 
-**It is stateful, so it cannot go on Workers** — the one piece of this stack that does not live on
-Cloudflare, and exactly what H8 warned about, now applied to the engine rather than the proxy. The
-shape is: client → Worker (proxy, auth, cache headers) → Electric (small always-on host, fast
-disk) → Postgres. The Worker is still where CDN collapsing happens, so the economics are unchanged.
+### D2 — Two sync strategies, chosen by table shape
 
-**The on-disk log is derived.** Lose the volume and Electric rebuilds from Postgres; there is no
-backup story to write. Clients take a `must-refetch`, which is survivable and is exactly D4.
+The single most important design rule in this document. Every synced table is one of two shapes,
+and each shape gets the mechanism that is correct for it by construction.
 
-**Neon / Lakebase is not an alternative today** — serverless Postgres with branching and
-autoscaling, no sync product announced. Watch it; do not wait for it.
+|                     | **Snapshot**                                                                                   | **Cursor**                                                 |
+| ------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| For tables that are | small and mutable                                                                              | large and append-only                                      |
+| Mechanism           | fetch the entire entitled set; diff; **absence = deleted**                                     | `id > cursor` across all the user's conversations          |
+| Handles inserts     | yes                                                                                            | yes                                                        |
+| Handles updates     | yes                                                                                            | rare, via a second bounded query on `edited_at/deleted_at` |
+| Handles deletes     | yes — by absence                                                                               | soft only                                                  |
+| Handles lost access | yes — the row is simply not in the next snapshot                                               | via the snapshot removing the conversation                 |
+| Ordering trap       | none — no cursor                                                                               | yes, see D5                                                |
+| Tables today        | `actors`, `agents`, `rooms`, `room_members`, `conversations`, `conversation_members`, `panels` | `messages`                                                 |
 
-### D1 — Shape parameters are set at the proxy, never by the client
+Why not one mechanism? Because a cursor cannot see updates — `id > cursor` only ever finds _new_
+rows, and a room rename, a promotion's visibility flip, an archive or a departure are all updates
+to rows whose ids sit below the cursor. And because a full-set fetch cannot scale to a table of
+messages. The two shapes need the two mechanisms, and the tables split cleanly between them.
 
-`electricCollectionOptions` takes a URL, not a where clause: shape configuration "happens at the
-proxy level, not in client code". The client asks for a collection; the proxy decides the
-`table`, `where` and `columns` it may have.
+There is a third shape — **large and mutable** — which neither handles alone. It is addressed in
+_Adding a table_ below, because `runs` will be the first example of it.
 
-That is the shape-proxy design already planned, and it means the authorisation table in
-`rooms.md` is enforced where it is written rather than trusted to a client parameter. A client
-that asks for someone else's private conversation gets a rejection, not a filtered result.
+### D3 — Scope is joined rooms, not visible rooms
 
-### D2 — The directory is a shape, because a request is not local-first
+Requirement 5 is about rooms the user is _in_. A public room they have never opened does not need
+its members and messages on their disk. Without that distinction the snapshot is unbounded:
+`room_members` alone could be 200 browsable rooms × 50 members. With it, the whole mutable set is
+roughly **1–2k rows** for an active user.
 
-"Which rooms am I in, and which private conversations" is per-user, and invariant 1 says shapes
-are never per user. The tempting answer is a TanStack Query call — and it is wrong, because
-Query is not local-first: on an offline cold start the room list would be empty while every
-room's messages sat in SQLite. That fails the one thing this document exists to deliver.
+So the snapshot covers rooms with a `room_members` row for this actor. Browsing an unjoined public
+room fetches its slice on demand — `GET /sync/room/:id` — into the same collections, so joining
+it afterwards costs nothing more.
 
-So `room_members where actor_id = $1` and `conversation_members where actor_id = $1` are real
-shapes, as a **deliberate, bounded exception**:
+### D4 — The snapshot: one fetch, an ETag, and absence means deleted
 
-- Tens of rows, a few columns each.
-- Changing on join, leave and create — a few times a week, not per keystroke.
-- H3's real cost is per-user _message_ shapes, where the volume is. Those stay conversation-
-  scoped and fully shared.
+`GET /sync/snapshot` returns every group-1 row the user is entitled to, in one response. The
+client diffs against local — insert new, update changed, delete anything absent — and that one
+diff handles inserts, updates, deletes and revoked access. No `updated_at` triggers, no tombstone
+table, no cursor semantics. It is correct because absence is meaningful.
 
-The alternative is a persisted Query cache, which is a third storage mechanism beside the
-collections and the outbox. Two small shapes buy one mechanism for everything.
+An ETag over the response makes the common case free: `If-None-Match` → `304` and nothing is
+transferred. The ETag persists through `exportSyncMeta` so a relaunch starts with it.
 
-### D3 — Time bounds cannot use `now()`, so the floor is a column
+One fetch feeds **seven collections**. A `SnapshotSource` singleton owns the request and the
+ETag; each collection gets a `SyncConfig` from `configFor(slice)` that shares them. The fetch runs
+on connect, on reconnect, on the per-user doorbell, and on any per-room doorbell naming a group-1
+table.
 
-Electric where clauses "cannot use non-deterministic SQL functions like `count()` or `now()`",
-and there is no `LIMIT` — a shape is a row-local predicate, so neither "the last 7 days" nor
-"the last 500 messages" is expressible. `ARCHITECTURE.md` asserts time-bounded shapes in three
-places and never says how, and the obvious workaround is harmful: baking a literal timestamp in
-at subscribe time gives every client a different shape definition, so nothing collapses at the
-CDN and the read-path economics that chose Electric evaporate.
+### D5 — The cursor: UUIDv7, an overlap window, idempotent apply
 
-**So the bound is `conversations.sync_floor`** — a message id below which clients do not sync.
-The shape is `conversation_id = $1 and id >= $floor`, and the floor comes from the conversation
-row the client already holds. Every member computes the same shape, so the CDN still collapses
-them, and because ids are v7 the floor is a primary-key range on the index that already serves
-paging.
+Because ids are UUIDv7 and therefore globally time-ordered, "everything new in every room I am
+in" is one indexed query on `messages_conversation_idx`:
 
-**Advancing the floor is expensive, which sets the policy in D5.** The Electric collection
-persists `{offset, handle, shapeId}` under `electric:resume` and reuses it on the next launch —
-but only when the shape identity is unchanged (`hasIncompatiblePersistedResume`,
-`electric.js:738`). A changed where clause is a changed shape, so an advance discards the resume
-state and re-downloads that conversation's window.
+```sql
+select * from messages
+where conversation_id = any($my_conversations) and id > $cursor
+order by id limit 1000
+```
 
-A daily time bucket would do that **to every conversation, for every client, every day** — H11
-on a daily cadence, with a full local truncate each time (D4). A per-conversation floor moves
-when that one conversation needs it to, and never for the rest.
+**The trap.** Ids are assigned at insert; rows become visible at commit. Transaction A takes an
+id, B takes a later id and commits first; the client syncs, sees B, advances the cursor; A
+commits with a _lower_ id. `id > cursor` never returns it. That row is gone from that device,
+silently, forever. It is the most common bug in hand-rolled sync.
 
-### D4 — A shape-backed collection is a cache; the archive is the real store
+**The fix** is an overlap window: request from `rewind(cursor, 5s)` — a v7 id with its timestamp
+moved back — and apply idempotently. Re-applying a key the collection already holds is a no-op
+(verified), so the window costs bandwidth measured in a handful of rows and nothing else. This is
+not an optimisation and is not optional; it is in the first version or the bug is in production.
 
-Read from `@tanstack/electric-db-collection` 0.4.7, because neither vendor documents it:
+Edits and soft-deletes are updates to existing rows, so they ride a second bounded query,
+`greatest(edited_at, deleted_at) > $since`, over the same conversation set. It needs an index
+`messages` does not have yet.
 
-- The collection maps Electric's `operation` header straight through, `delete` included
-  (`electric.js:855`). Electric communicates "this row left your shape" **as a delete**, so the
-  collection emits one and the persister removes the row and tombstones it.
-- A `must-refetch` control message calls `truncate()` (`electric.js:973`), wiping the entire
-  local collection before rebuilding it.
+The cursor persists through `exportSyncMeta`. We do not write that code.
 
-**Nothing that must outlive a shape change may live in a shape-backed collection.** So there are
-two tiers, and the distinction is the same derived-vs-precious split Phase 4 already draws,
-applied one level lower:
+### D6 — One collection per table, including one `messages` collection
 
-|           | The live window                      | The retained archive                                            |
-| --------- | ------------------------------------ | --------------------------------------------------------------- |
-| Backed by | an Electric shape                    | nothing — `local-only`                                          |
-| Contents  | `id >= sync_floor`                   | every message this device has ever seen                         |
-| Lifetime  | truncated whenever the shape changes | never truncated                                                 |
-| Fed by    | the shape log                        | rows arriving in the window, plus history paged from the server |
-| Bounded   | yes, by D5                           | no                                                              |
+Not one per conversation. Electric's shape-per-conversation forced that split; without shapes
+there is nothing to split on. One `messages` collection holds everything synced, queried locally
+by `conversation_id`, and `LoadSubsetOptions` — `where`, `orderBy`, `limit`, `cursor`, with a
+matching unload — windows it into memory as the user scrolls rather than holding a year whole.
 
-`persistedCollectionOptions` has a `PersistedLocalOnlyOptions` overload, so the archive is the
-same API and the same SQLite file — a second collection, not a second mechanism.
+Nothing in our sources ever calls `truncate()`. There is no shape to leave, so local history only
+accumulates. The window-and-archive split an Electric design needed does not exist here.
 
-**Reading a conversation is a merge of the two, deduped by id.** Because ids are v7 and sort
-chronologically, that is a merge on a sorted key rather than a sort.
+### D7 — The doorbell is a poke, not a log
 
-**The duplication is bounded, not doubled.** A message in the window is also in the archive, but
-the window is capped by D5 at a few thousand rows per conversation while the archive is
-unbounded — so the overlap is a few megabytes per conversation, not a copy of history. Keeping
-the window persisted is what preserves the resume state, and therefore H11.
+Supabase Realtime, _Broadcast from Database_: a trigger calls `realtime.send()` and the client
+hears "room X changed, table T". The payload is a poke. Postgres stays the source of truth, so
+Broadcast's three-day retention and its timestamp-only replay never matter — a missed poke costs
+one extra catch-up, never a gap.
 
-The one mechanical unknown left: confirm a `local-only` collection beside a shape-backed one is
-not truncated with it. It has its own table and its own collection id, so it should not be —
-but this is the assumption the whole tier rests on, so it gets a test rather than a shrug.
+Two kinds of channel over one WebSocket:
 
-### D5 — Retention: a count-based window with hysteresis, and an archive that keeps everything
+- **Per-room private channels**, one per joined room — content changed.
+- **One per-user channel** — membership changed. Necessary because a room the user was _just
+  added to_ is one they are not yet subscribed to.
 
-**The window is capped by message count per conversation, not by time.** Time buckets move on a
-clock nobody controls and move for every conversation at once; a count moves only for the rooms
-that are actually busy, and most rooms never reach it at all.
+Coalesced server-side to at most one poke per room per second. That is also what keeps Realtime
+message volume, and therefore cost, flat as rooms get busy.
 
-**Target 5,000 messages, advanced with hysteresis:** a conversation gets a floor only when it
-exceeds 10,000, and the advance trims it back to 5,000. So the shape changes once per 5,000
-messages rather than continuously, and the re-download D3 describes is paid roughly once every
-fifty days in a busy room and never in a normal one.
+Private channels need an authorization policy on `realtime.messages`; it is the same rule as
+`mayReadRoom`, expressed as RLS on that one table and nowhere else. RLS stays off everywhere else
+(Phase 0's decision stands); this is the single table where Supabase requires it.
 
-Sizing, at roughly 0.5–1 KB per message row all-in:
+### D8 — Writes: optimistic, queued, idempotent, one endpoint
 
-|                                     | messages | on disk |
-| ----------------------------------- | -------- | ------- |
-| A 5,000-message window              | 5,000    | ~5 MB   |
-| A busy room (100/day), one year     | ~36,000  | ~36 MB  |
-| 20 active rooms, one year, archived | ~365,000 | ~365 MB |
+`collection.insert()` applies locally and the UI updates. `@tanstack/offline-transactions`
+persists the mutation before dispatch, retries with backoff, and hands `POST /writes` an
+`idempotencyKey`. The endpoint honours it from the first write — so H6 (duplicate PRs, duplicate
+comments on retry) is closed before it can open — and returns the canonical row, which the
+collection upserts by key.
 
-None of that troubles SQLite on a desktop, and **memory is not the constraint either**:
-`LoadSubsetOptions` carries `where`, `orderBy`, `limit`, `cursor` and `offset`, with a matching
-unload, so a large archive is windowed into memory as someone scrolls rather than held whole.
+One write endpoint, not per-resource routes, sharing `unsealSession()` and `access.ts` with the
+read path. The transactions it calls — `createRoom`, `addRoomMember`, `archiveRoom`,
+`promoteConversation` — already exist in `apps/server/src/rooms.ts` and are already tested.
 
-**The archive is unbounded on purpose.** It is the user's own data in a file that grows slowly.
-If it ever needs a limit that is a preference — "keep the last N months offline" — not an
-engineering constraint, and it should not be invented before someone asks.
+Simpler than the Electric design in one specific way: no `awaitTxId`. The response carries the
+row, and the next catch-up would carry it anyway.
 
-**What this means in the product's own words:** every room you have been in, as far back as you
-have read, available offline and instantly searchable. Only a new device, or a room you have
-never opened, needs the network.
+### D9 — Persistence is the TanStack stack, verified
 
-### D6 — Writes: txid matching, and one txid across several collections
-
-Electric is read-path only and "intentionally doesn't prescribe a built-in write solution".
-TanStack DB reconciles by transaction id: the mutation handler returns the txid of the
-transaction that performed the write, the client calls `awaitTxId()`, and TanStack DB "blocks
-sync data until the mutation is confirmed". The documented requirement is to query the txid
-**inside** the same transaction as the mutation.
-
-`rooms.md` writes across several tables at once, so:
-
-- **Room creation** is three inserts (`rooms`, `conversations`, `room_members`) and **promotion**
-  is two updates (`conversations`, `panels`). One Postgres transaction yields one txid, so every
-  affected collection awaits the same value — the write endpoint returns it once and the client
-  feeds it to each collection.
-- **Archiving a room** stamps four tables at once. Same mechanism, wider fan-out, and the reason
-  it is one transaction rather than a cascade of writes.
-
-### D7 — Exclude the `search_text` projection from every shape
-
-Electric shapes take a column allow-list. `messages.search_text` duplicates `body` on the wire for
-every message and exists only for the server's `tsvector`; clients derive their own text from
-the blocks. Excluding it roughly halves the message shape's bytes.
-
-Invariant 13 applies to `body` for the same reason — labels in Postgres, payloads in object
-storage. A block carrying an agent's tool output is that invariant broken on the highest-volume
-table in the product.
-
-### D8 — The desktop stack exists, and we build less than the doc assumed
-
-`ARCHITECTURE.md` says Phase 4 was rewritten around `persistedCollectionOptions` and
-`db-sqlite-persistence-core`. Both exist, and so does more than it knew — none of it in
-TanStack DB's documentation index, so this was read from the published packages:
-
-| Package                                    | Version    | What it is                                  |
+| Package                                    | Version    | Role                                        |
 | ------------------------------------------ | ---------- | ------------------------------------------- |
-| `@tanstack/db`                             | 0.8.7      | the collection engine                       |
-| `@tanstack/electric-db-collection`         | 0.4.7      | the Electric sync source                    |
-| `@tanstack/db-sqlite-persistence-core`     | 0.2.20     | `persistedCollectionOptions`                |
-| `@tanstack/node-db-sqlite-persistence`     | 0.2.20     | Node adapter over a `better-sqlite3` handle |
-| `@tanstack/electron-db-sqlite-persistence` | **0.1.32** | main-process bridge + renderer client       |
+| `@tanstack/db`                             | 0.8.7      | collections, live queries, `SyncConfig`     |
+| `@tanstack/db-sqlite-persistence-core`     | 0.2.20     | `persistedCollectionOptions`, SQLite schema |
+| `@tanstack/electron-db-sqlite-persistence` | **0.1.32** | `better-sqlite3` in main, IPC to renderer   |
 | `@tanstack/browser-db-sqlite-persistence`  | 0.2.20     | wa-sqlite over OPFS                         |
-| `@tanstack/offline-transactions`           | 1.0.53     | durable outbox, retry, leader election      |
+| `@tanstack/offline-transactions`           | 1.0.53     | the outbox                                  |
 
-All published 2026-08-31.
+All published 2026-08-31; none of it in TanStack's docs index, so it was read from the packages.
 
-**Invariant 10 holds by construction.** The Electron bridge runs `better-sqlite3` in the main
-process and exposes it to the renderer over IPC, re-exporting the same `persistedCollectionOptions`
-the browser adapter uses. Same API, two adapters, and `packages/sync/src/local/` already has the
-seam from `navigation.md`.
+What the spike established, at runtime:
 
-**What arrives for free:**
+- `persistedCollectionOptions` wraps _any_ `SyncConfig` and declares `sync-present` /
+  `sync-absent` — offline cold start is a first-class mode.
+- Writes across batches accumulate; a re-applied key is a no-op upsert.
+- The adapter owns its schema — a hashed table per collection registered in
+  `collection_registry`, plus tombstones, `applied_tx`, `collection_metadata`, `leader_term`.
+- `truncate()` is `DELETE FROM` that collection's own table and nothing else, and must be called
+  inside `begin()`/`commit()` or it throws.
+- The whole thing runs over Node's built-in `node:sqlite` through a ~20-line driver — no native
+  build, which is how the sync sources get tested in CI.
 
-- `persistedCollectionOptions` **wraps** a sync config rather than replacing it, and declares a
-  `PersistedCollectionMode` of `sync-present` or `sync-absent` — offline cold start is a
-  first-class mode, not an accident.
-- The adapter owns its SQLite schema: a table per collection plus `collection_metadata`,
-  `applied_tx`, `collection_version`, `schema_version`, `collection_reset_epoch`, a tombstone
-  table, and `leader_term` for multi-process coordination.
-- Shape resume across restarts (D3). **That is H11, solved upstream** — the hazard the doc kept
-  for us to test is now someone else's code, and testing it becomes a regression check rather
-  than a design task.
+**Invariant 10 holds by construction:** the Electron bridge and the browser adapter re-export the
+same `persistedCollectionOptions`. Nothing above the persister knows which it is on.
 
-**What stays ours:**
+**The caution is age, not capability.** `@tanstack/db` is pre-1.0 and the Electron bridge is
+0.1.x. Pin exact versions; keep the persister behind `packages/sync/src/local/`.
 
-| Ours                                                        | Theirs                                  |
-| ----------------------------------------------------------- | --------------------------------------- |
-| The shape proxy and the auth paths                          | Shape transport, resume, local SQLite   |
-| The write endpoint — handlers, txid return (D6)             | Optimistic reconciliation, `awaitTxId`  |
-| The cross-room subscription registry and its tiering        | Per-collection sync lifecycle           |
-| The retained archive and history paging (D4)                | Persistence of shape-backed collections |
-| `sync/src/local/` view state — tab strip, panel arrangement | The adapter under it                    |
+### D10 — The browser is best-effort
 
-### D9 — The browser persists too, but durability is best-effort
+The browser adapter needs only `navigator.storage.getDirectory` and `Worker` — **no
+cross-origin isolation**, which would have broken every embed. But: OPFS is evictable, Safari caps
+script-writable storage at seven days without interaction, multi-tab coordination is opt-in via
+`BrowserCollectionCoordinator` and effectively mandatory, and a missing prerequisite throws
+`PersistenceUnavailableError` rather than degrading. So on browser, local-first means "fast and
+offline-capable while the data is there". The degraded mode — in-memory collections, no offline,
+a UI that says so — is ours. `packages/sync/src/platform.ts` types `persistence` as
+`'sqlite' | 'indexeddb'` today and wants `'sqlite' | 'opfs' | 'memory'`.
 
-`@tanstack/browser-db-sqlite-persistence` is wa-sqlite over OPFS, sharing the same core and
-re-exporting the same options.
+## Table by table
 
-**It does not need cross-origin isolation**, which is the thing that would have hurt. The
-prerequisite check is only `navigator.storage.getDirectory` and `Worker` — no `SharedArrayBuffer`,
-no `crossOriginIsolated`. COOP/COEP would have meant CORP headers on every asset and broken
-embeds, in a product whose thesis is embedding other people's pages.
+| Table                                 | Syncs | Strategy | Scope                                                | Doorbell        |
+| ------------------------------------- | ----- | -------- | ---------------------------------------------------- | --------------- |
+| `users`, `organization_memberships`   | no    | —        | `actors` carries the projection; `users` never syncs | —               |
+| `workspaces`, `workspace_memberships` | no    | —        | `/auth/workspaces`; server-side auth only            | —               |
+| `actors`                              | yes   | snapshot | members of joined rooms, plus authors seen           | per-user        |
+| `agents`                              | yes   | snapshot | the workspace's                                      | per-user        |
+| `rooms`                               | yes   | snapshot | joined                                               | per-room        |
+| `room_members`                        | yes   | snapshot | of joined rooms                                      | per-room + user |
+| `conversations`                       | yes   | snapshot | of joined rooms, plus private ones I am in           | per-room        |
+| `conversation_members`                | yes   | snapshot | of those conversations                               | per-room        |
+| `panels`                              | yes   | snapshot | of joined rooms, shared + mine                       | per-room        |
+| `messages`                            | yes   | cursor   | conversations I may read                             | per-room        |
+| `runs` _(Phase 5)_                    | yes   | **both** | see below                                            | per-room        |
+| `run_events` _(Phase 5)_              | yes   | cursor   | runs in joined rooms; labels only (invariant 13)     | per-room        |
+| `claims` _(Phase 10)_                 | yes   | snapshot | of joined rooms                                      | per-room        |
 
-Three real differences from desktop:
+`conversations.sync_floor` narrows in meaning on this path: it is no longer a shape bound, it is
+the **bootstrap floor** — how far back a brand-new device fetches on first sync. It stays a
+column because the answer legitimately differs per conversation.
 
-- **Storage is evictable.** OPFS sits under the origin quota, and Safari caps script-writable
-  storage at seven days without user interaction. `navigator.storage.persist()` improves the odds
-  and is granted on heuristics. So on browser, local-first means "fast and offline-capable while
-  the data is there" — not "your history is on your disk". D5's archive is a promise desktop can
-  keep and the browser cannot.
-- **Multi-tab coordination is opt-in and effectively mandatory.** The default is
-  `SingleProcessCoordinator` — no leader election, no `BroadcastChannel`, no Web Locks — correct
-  only if the app is open in exactly one tab, which a browser app never is.
-  `BrowserCollectionCoordinator` elects a leader over Web Locks and fans transactions out over
-  `BroadcastChannel`, followers RPC-ing writes to the leader.
-- **There is no fallback.** Missing prerequisites throw `PersistenceUnavailableError` rather than
-  degrading to IndexedDB. Private browsing, an old Safari or blocked storage means no persistence,
-  so **we** own the degraded mode: in-memory collections, no offline, and a UI that says so.
-  `packages/sync/src/platform.ts` types `persistence` as `'sqlite' | 'indexeddb'` today and wants
-  `'sqlite' | 'opfs' | 'memory'`.
+## Adding a table — how this scales
 
-**And the PowerSync rejection is stale.** The peer dependency is `@journeyapps/wa-sqlite` —
-PowerSync's own fork. `ARCHITECTURE.md` rejected PowerSync "on browser grounds (WASM SQLite /
-OPFS pain)" and the chosen path runs on PowerSync's wa-sqlite over OPFS. Electric still wins on
-read-path economics, which was always the reason that mattered; the browser line should be struck.
+The point of D2 is that adding a table is a **classification, not a design**. Four steps, each
+mechanical:
 
-### D10 — What a room looks like on the browser surface
+1. **Classify.** Small and mutable → snapshot. Large and append-only → cursor. Decide from the
+   table's write pattern, not its current size.
+2. **Server.** Snapshot: add the slice to `buildSnapshot()`, scoped by the entitlement query from
+   `access.ts`. Cursor: add `GET /sync/<table>?after=`, same scoping, same overlap.
+3. **Client.** One collection. Snapshot: `snapshot.configFor('<slice>')`. Cursor: a copy of
+   `messagesSync` with the endpoint swapped.
+4. **Doorbell.** One `after insert or update or delete` trigger calling the shared
+   `notify_room_change()`.
 
-- **`panels` of kind `browser` cannot render.** There is no `<webview>`, and `X-Frame-Options` /
-  CSP blocking naive iframes is precisely why Electron was chosen. So a panel degrades to what
-  the row already is — a URL — and opens in a new tab. The room still shows _what is open and who
-  opened it_, which is most of the value. `terminal` and `sandbox` degrade the same way, and
-  nothing in the schema changes: the renderer switches on `kind` and on the platform capability.
-- **L2 bites harder.** Five shapes per active room is survivable over HTTP/2, where the limit is
-  concurrent streams rather than six connections — but any downgrade to HTTP/1.1 makes six a hard
-  wall. The subscription tiering that is a nicety on desktop is load-bearing here.
+No new endpoints for snapshot tables. No new mechanisms for either. The entitlement query is the
+only piece of thought per table, and it is the same question the point check in `access.ts`
+already answers.
 
-## What local-first does not buy
+**The third shape: large and mutable.** `runs` is one row per agent invocation — hundreds of
+thousands a month at scale — whose `status` column changes while it is live and then never
+again. Neither strategy fits alone; the split does:
 
-Worth stating plainly so it is not discovered in a demo. Offline, a user can read, search and
-review everything already synced, and queue a message that sends on reconnect. They cannot start
-an agent run, and they cannot load a webview panel — the runtime is server-side and the artifacts
-live in Notion and Google Docs by design.
+- **History** — terminal runs — syncs by cursor. Append-only in practice, because a finished
+  run never changes.
+- **The live set** — runs not yet terminal — rides the snapshot. There are never many, and their
+  updates are exactly what the snapshot handles.
 
-That is the right half to have offline. The product's thesis is that it owns _who is doing what
-to which part_; the record is the thing worth carrying, and the doing was always going to need
-the network.
+The client sees one `runs` collection fed by both sources. This is the pattern for any table that
+is "an append-only log with a small mutable head", which describes most things an agent produces.
+
+### Where it stops, and what comes next
+
+Both mechanisms have a ceiling, and each ceiling has a named escalation. Neither is near.
+
+**The snapshot grows past what a connect can carry** — say ~10k rows per user, because
+`room_members` or `actors` stopped being small. Escalation: a **change-log table**. A trigger on
+each snapshot table writes `{seq, table, row_id, op, row_data}`; the client reads `seq > cursor`.
+One cursor for everything, deletes captured. It is what Electric's shape log and PowerSync's
+bucket ops are, built in-house — 2× write amplification, a partitioned log with a pruning cron
+(the pattern `run_events` already uses), and the D5 trap on the sequence. Real work; well
+understood; not needed until the snapshot is measurably too big.
+
+**Per-user catch-up dominates Postgres** — it is the top entry in `pg_stat_statements` and read
+replicas are not enough. That is the cost curve this design accepted knowingly: N clients in a
+room are N queries, where a shared log would serve one cached response. Escalation: **adopt
+Electric self-hosted** for the append streams, at the one swap point D1 names. By then the
+decision is made with telemetry.
+
+**Realtime message volume.** Supabase Pro includes 2.5M messages/month and 500 peak concurrent;
+beyond that ~$10/M and ~$10 per 1,000 concurrent. The per-room-per-second coalescing is what keeps
+this flat; without it a busy room fans out one message per change per member.
+
+### Cost, for the record
+
+Estimated at ₹88/USD, ~10 rooms per user, 30 messages/day per DAU, ~1 KB per row, peak
+concurrent ≈ 25% of DAU. Only the layer that differs between engines is counted; Supabase,
+Workers, WorkOS and R2 are common to all.
+
+| Monthly, ₹           | 100 DAU | 1,000 DAU | 10,000 DAU |
+| -------------------- | ------- | --------- | ---------- |
+| **This design**      | 2,640   | 3,520     | ~16,300    |
+| Electric self-hosted | 3,344   | 4,224     | ~10,600    |
+| PowerSync Cloud      | 2,640   | 7,832     | ~17,500    |
+| Zero self-hosted     | 4,048   | 4,928     | ~13,200    |
+
+The spread at 1,000 DAU is under an hour of engineering time. At 10,000 DAU this design's number
+is mostly Realtime overage, which coalescing softens. Infrastructure cost does not decide this;
+engineering time, operational surface and vendor risk do.
+
+## Developer experience
+
+**Reading.** A component asks a question, not for data:
+
+```tsx
+const { data: thread } = useLiveQuery((q) =>
+  q
+    .from({ m: messages })
+    .where(({ m }) => eq(m.conversationId, id))
+    .join({ a: actors }, ({ m, a }) => eq(m.authorId, a.id))
+    .orderBy(({ m }) => m.id),
+);
+```
+
+Joins across collections happen on the device, reactively. No loading state to manage for synced
+data — it is either there or it is arriving, and the query re-runs when it lands. The
+`message → actor` join is why `actors` carries `display_name`: one hop, no `users`.
+
+**Writing.** `messages.insert({...})`. The developer never touches the network. Optimistic apply,
+queue, retry, idempotency and reconciliation are the outbox's job.
+
+**Adding a table** is the four steps above. **Adding a field** is a migration and a type; the
+snapshot and cursor carry whole rows, so nothing in the sync layer changes.
+
+**Testing.** A sync source is a plain function over `SyncConfig`. The spike's `node:sqlite`
+driver is the test harness: a real persisted collection, a fake `api`, no Electron, no native
+build, milliseconds per test. Server endpoints test the way `rooms.test.ts` already does —
+against local Postgres, with the guest / member / admin cast.
+
+**Debugging.** The local SQLite file is a file — open it. The cursor and ETag are rows in
+`collection_metadata`. Every sync endpoint is `curl`-able with a bearer, so "what would this
+device receive" is a request, not a debugging session. There is no shape log or replication slot
+to reason about.
+
+**Local development.** Nothing new to run. `pnpm run up` already brings up Supabase, and Realtime
+is part of it. The Worker is `pnpm dev`. That is the whole stack.
+
+## Rejected
+
+| Option                                            | Why it lost                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Electric** (self-hosted; Cloud is winding down) | Shapes per (table, filter): requirement 5 costs ~200 subscriptions or a per-user shape that forfeits the CDN collapsing that was the whole argument. A stateful Elixir service with an NVMe volume, the one thing outside Cloudflare. Stewardship changed hands in August; the docs were a month stale about it                                                                                      |
+| **PowerSync**                                     | The best off-the-shelf fit for the six requirements, and a real alternative. Lost on: a second vendor in the read path, a persistent stream per client with per-user buckets, and a sync-rules DSL that would have to express our auth union. The doc's _original_ rejection — "WASM SQLite / OPFS pain" — was false; TanStack's browser persistence is wa-sqlite over OPFS via PowerSync's own fork |
+| **Zero**                                          | Heaviest infrastructure of any option: a replication-manager plus view-syncers, a full SQLite replica of Postgres on high-IOPS disk. Self-host only. Query-driven, so requirement 5 means holding preload queries for every room. The doc's "cost scales with clients × queries" is stale — IVM now scales with changed rows — but the conclusion stands                                             |
+| **Convex**                                        | Reactive queries over WebSocket with an in-memory cache; no durable local store, so a cold start offline shows nothing. Would also replace Postgres, Drizzle, the WorkOS mirror and three migrations. PowerSync lists it as a _source_ — the backend half of a pairing, not the offline half                                                                                                         |
+| `queryCollectionOptions` for the cursor           | Tracks row ownership per query key and garbage-collects claims; a moving cursor mints unbounded keys, and rows whose key is collected lose their owner. Silent data loss. `SyncConfig` directly is the right level                                                                                                                                                                                   |
+| A change-log table from day one                   | Correct and general, and it is a sync engine — trigger per table, 2× writes, partitioned log, pruning cron, the D5 trap on its sequence. Named as the escalation, not the start                                                                                                                                                                                                                      |
+| `updated_at` cursors on snapshot tables           | Same commit-ordering trap as D5, plus clock skew, plus a trigger per table, plus tombstones for deletes. The snapshot's absence-means-deleted needs none of it                                                                                                                                                                                                                                       |
+| A daily time bucket for the sync bound            | Cannot be expressed anyway — but even where it could, it churns every conversation at once on a clock nobody controls                                                                                                                                                                                                                                                                                |
+| Per-resource REST for writes                      | Two write paths with two sets of invariants. One endpoint calling the transactions in `rooms.ts`                                                                                                                                                                                                                                                                                                     |
 
 ## Hazards
 
-- **L1 — treating a shape-backed collection as storage.** It is a cache and it gets truncated
-  (D4). Anything that must survive a shape change belongs in the archive, and a later
-  "simplification" that merges the two deletes user history.
-- **L2 — five shapes per active room.** Electric covers one table per shape, so a room is
-  `rooms`, `room_members`, `conversations`, `messages` and `panels`, plus one more `messages`
-  shape per promoted panel chat. Phase 2 worried about forty subscriptions for someone in forty
-  rooms; the real number is nearer two hundred, and the tiering stops being an optimisation.
-- **L3 — a floor that advances too often.** Every advance discards the resume state and
-  re-downloads the window (D3). Continuous trimming would turn a bounded cost into a constant
-  one; D5's hysteresis is the whole reason the threshold and the target are different numbers.
-- **L4 — two durability stories on desktop.** Collections persist to SQLite through the Electron
-  IPC bridge; `@tanstack/offline-transactions` persists its outbox to IndexedDB with a
-  localStorage fallback. A queued send and the messages it will join live in different stores
-  with different failure modes. Verify what a mid-send quit leaves behind.
-- **L5 — assuming the browser keeps what it stored.** OPFS is evictable and Safari caps
-  script-writable storage at seven days without interaction. Anything that treats local data as
-  authoritative — an unsent draft, a queued write, a read cursor — must survive its
-  disappearance. Request `navigator.storage.persist()`, but design for the refusal.
-- **L6 — the youngest dependency under the oldest promise.** `@tanstack/db` is 0.8.7 and the
-  Electron bridge 0.1.32, both published a week before this plan, and local-first is a goal from
-  day one. Pin exact versions, keep the persister behind the `sync/src/local/` interface, and
-  treat an upgrade as a change to a load-bearing component.
+- **L1 — the commit-ordering trap.** `id > cursor` without the overlap window loses rows silently
+  and permanently. The window is in the first commit or the bug ships. (D5)
+- **L2 — the snapshot outgrowing a connect.** If `room_members` or `actors` per user climbs into
+  the tens of thousands, first-connect latency will say so before anything breaks. Watch the
+  response size; the change-log escalation is the answer, not a bigger page.
+- **L3 — per-user catch-up as the top query.** The accepted cost curve. `pg_stat_statements` is
+  the signal; read replicas first, the Electric swap second.
+- **L4 — a doorbell without coalescing.** One Realtime message per change per room member is the
+  multiplier H2 warned about, on a different meter. Coalesce per room per second from the start.
+- **L5 — snapshot tables that quietly become append-heavy.** `reactions`, when it arrives, is
+  small per message and unbounded per user. Classify it deliberately (D2's third shape) rather
+  than dropping it into the snapshot because it looks small today.
+- **L6 — two durability stories on desktop.** Collections persist to SQLite through the Electron
+  bridge; the outbox persists to IndexedDB with a localStorage fallback. A queued send and the
+  messages it will join live in different stores. Verify what a mid-send quit leaves behind.
+- **L7 — assuming the browser keeps what it stored.** OPFS is evictable. Anything treating local
+  data as authoritative — a draft, a queued write — must survive its disappearance. Request
+  `navigator.storage.persist()`; design for refusal.
+- **L8 — the youngest dependency under the oldest promise.** `@tanstack/db` 0.8.7, Electron
+  bridge 0.1.32. Pin exact versions; treat an upgrade as a change to a load-bearing component.
+- **L10 — six connections is the whole budget.** A room is five shapes and each is an open
+  long-poll; with `actors` that is six, which is exactly the HTTP/1.1 per-origin limit. A second
+  room deadlocks the first. Electric warns about it in the console, and it was hit on the first
+  real page load. HTTP/2 multiplexes them onto one connection. **Production must be HTTP/2 end to end** — this
+  is not tuning; without it, "subscriptions are independent of what is rendered" is
+  unimplementable. In dev it is opt-in: `RELAY_HTTPS=1 pnpm dev` puts Vite on a self-signed
+  certificate and tells the Electron shell to accept it. Opt-in rather than default because
+  the certificate cost a browser trust prompt plus a Chromium switch, and the wall only appears
+  with a second room open — so flip it on for multi-room work and leave it off otherwise.
+- **L11 — `cleanup()` is not "stop syncing".** It tears a collection down permanently, and
+  collections are cached and shared. Calling it on release meant StrictMode's double-invoke
+  destroyed the instance before the second retain reused it — the symptom was a room that
+  rendered its chrome with every collection empty and _no shape ever requested_. Retain holds a
+  `subscribeChanges` subscription instead; a collection syncs while it has subscribers and GCs
+  when it does not.
+- **L9 — a missing `messages` index.** The edits/deletes query needs one on
+  `(conversation_id, greatest(edited_at, deleted_at))` or a functional equivalent. Without it the
+  second query is a scan that grows with history.
 
 ## Steps
 
-- [ ] **H1 first, genuinely.** `electricsql/electric` in the local compose stack with a named
-      volume, wired into `pnpm run up` and `pnpm health`; replication-slot lag alerting before
-      any data flows. An inactive slot grows the WAL without bound and Supabase disk never shrinks
-- [ ] Decide where the container runs in deployed environments — stateful, fast disk, not Workers
-- [ ] Shape definitions in `packages/schema`, server-side only, one per row of the table above
-- [ ] Shape proxy: unseal session → authorise per `rooms.md` → proxy to Electric
-- [ ] `packages/sync`: Electric collections, then wrap them in `persistedCollectionOptions`
-- [ ] The subscription registry with its inverse, plus the active/idle tiering (L2)
-- [ ] **Test that a `local-only` collection survives a sibling's `truncate()`** (D4) — the
-      assumption the archive tier rests on
-- [ ] The archive collection, fed from the window and from paged history
-- [ ] Merged read: window ∪ archive, deduped by id, windowed by `loadSubset`
-- [ ] `sync_floor` advance job, server-side, with D5's hysteresis
-- [ ] Write endpoint returning txid from inside the transaction (D6)
-- [ ] Offline outbox, honouring `idempotencyKey` from the first write (H6)
-- [ ] Browser adapter, multi-tab coordinator, and the degraded mode (D9)
+- [x] Spike: `SyncConfig`, `persistedCollectionOptions`, truncate scoping, incremental append,
+      cursor persistence — all verified at runtime over `node:sqlite`
+- [ ] `access.ts`: `visibleRooms`, `joinedRoomIds`, `readableConversationIds` — the set forms,
+      placed beside the point checks they must agree with
+- [ ] `GET /sync/snapshot` — `buildSnapshot()`, ETag, 304
+- [ ] `packages/sync/src/collections/`: `SnapshotSource`, seven collections, the shared persistence
+- [ ] The test harness: the spike's `node:sqlite` driver, promoted to `packages/sync/test/`
+- [ ] **Render a room from local data with the network off** — the first thing on screen, before
+      the hardest part is built
+- [ ] `rewind()` and the overlap window; `GET /sync/messages?after=`; the `messages` collection
+- [ ] Index for the edits/deletes query (L9); the second bounded query
+- [ ] `notify_room_change()` trigger; per-room and per-user channels; RLS on `realtime.messages`;
+      coalescing
+- [ ] `POST /writes` with `idempotencyKey`; outbox wiring; the reconciliation on response
+- [ ] `GET /sync/room/:id` for browsing unjoined rooms
+- [ ] Bootstrap for a new device: snapshot then messages from `sync_floor`
+- [ ] Browser adapter, `BrowserCollectionCoordinator`, and the degraded mode
 
 ## Questions to settle
 
-- **Where does the Electric container run?** Stateful, wants local NVMe, cannot go on Workers,
-  so it is the one service outside Cloudflare. Fly.io with a volume, a small storage-optimised
-  VM, or a container platform with a disk. Replaces the old Q2 about Electric Cloud egress IPs.
-- **How far back, in the product's words?** D5 proposes a 5,000-message window and an unbounded
-  archive, which means "everything you have read, forever". Confirm that is the promise — it is
-  a product statement, and the alternative (a stated retention limit) is cheaper to say now than
-  to introduce later.
-- **What advances `sync_floor` — a job, or a write-path trigger?** The policy is D5; the
-  mechanism is not settled. A nightly job is simpler and the hysteresis makes latency irrelevant.
-- **Does the outbox belong in SQLite on desktop?** (L4.) Living with two stores is probably right
-  for now; it should be a decision rather than an accident.
+- **How far back does a new device go?** `sync_floor` per conversation is the mechanism; the
+  policy — a month, a thousand messages, everything — is a product statement.
+- **Does the outbox belong in SQLite on desktop?** (L6.) Two stores is probably right for now;
+  it should be a decision rather than an accident.
 - **Electron multi-window and the outbox's leader election.** It assumes browser tabs. Phase 11,
   but the answer may constrain multi-window.
 - **The degraded browser mode.** No persistence means in-memory collections and no offline. What
   does the UI say, and does anything become read-only?
+- **`reactions`, when it comes.** Which of D2's shapes, and does it need the third-shape split?
 
 ## Candidates for ARCHITECTURE.md
 
-> **Applied 2026-09-06.** Everything below is now recorded upstream. Kept as the record of
-> what changed and why, not as a to-do.
-
-1. **Time-bounded shapes cannot use `now()`** (D3). Asserted in three places without a mechanism,
-   and the naive one destroys the CDN collapsing the Electric choice rests on. `sync_floor`
-   replaces it.
-2. **A shape-backed collection is a cache, not storage** (D4). The two-tier window-and-archive
-   model, and the reason history cannot live in a synced collection.
-3. **Refine invariant 1.** Shapes are scoped by a container many subscribers share — room _or_
-   conversation — never per user, with the directory (D2) as a named, bounded exception.
-4. **Phase 4's persistence stack is real, richer than recorded, and pre-1.0** (D8). An Electron
-   bridge and a durable outbox exist, neither is in TanStack's docs index, and the Electron
-   bridge is 0.1.x. H11 is solved upstream. The version table belongs in the doc.
-5. **Strike the PowerSync browser-grounds rejection** (D9). Our browser path is wa-sqlite over
-   OPFS via PowerSync's own `@journeyapps` fork. The Electric decision stands on read-path
-   economics; that line does not.
-6. **Browser durability is best-effort** (D9). The surface table calling browser "everything
-   except the webview panel" understates the difference.
-7. **Electric's docs moved to `electric.ax`** — the llms.txt and guide links in
-   `ARCHITECTURE.md` and `CLAUDE.md` now redirect.
+1. **Reverse the Phase 2 sync-engine decision.** "ElectricSQL + TanStack DB" becomes "Supabase +
+   TanStack DB with a sync source we own", with D1's reasoning and requirement 5 as the cause.
+   The Electric section becomes the record of why it lost, not a plan. Phase 2's steps, nuances
+   and exit criterion are rewritten around the snapshot and the cursor.
+2. **Retire the shape vocabulary.** Invariant 1 ("shapes are scoped by…"), hazards H3 and H11,
+   and the shape proxy in Phase 2 describe a design no longer being built. What replaces them: the
+   two-strategy rule (D2) and the commit-ordering trap (L1) as a named hazard.
+3. **RLS has one exception.** Phase 0's "No RLS" stands everywhere except `realtime.messages`,
+   which Supabase requires for private channels (D7).
+4. **Phase 3's write path is simpler than described** — no `awaitTxId`; the response carries the
+   row (D8).
+5. **Record the third table shape** — append-only log with a mutable head — as the pattern for
+   `runs` before Phase 5 designs it.

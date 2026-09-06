@@ -8,6 +8,7 @@ import {
   roomMembers,
   rooms,
   workspaceMemberships,
+  workspaces,
 } from '@relay/schema';
 
 type Db = PostgresJsDatabase<Record<string, unknown>> | PgTransaction<never, never, never>;
@@ -147,6 +148,40 @@ export async function mayReadConversation(
  * bounds an agent to the rooms it was deliberately added to, so removing it from a room stops
  * future invocations without touching a credential.
  */
+/**
+ * The workspace half of D3's union — a boolean, not a list. The room-directory shape encodes
+ * the list itself; this is what the proxy needs first, to decide which branch of that where
+ * clause a viewer gets. Same primary-key lookup `mayReadRoom`'s public path already does.
+ */
+export async function isWorkspaceMember(
+  d: Db,
+  viewer: Viewer,
+  workspaceId: string,
+): Promise<boolean> {
+  const [member] = await d
+    .select({ userId: workspaceMemberships.userId })
+    .from(workspaceMemberships)
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, workspaceId),
+        eq(workspaceMemberships.userId, viewer.userId),
+      ),
+    )
+    .limit(1);
+  return !!member;
+}
+
+/** Whether a workspace belongs to the viewer's organization — the room-directory shape's only
+ *  gate beyond membership, since the where clause itself does the rest. */
+export async function workspaceInOrg(d: Db, viewer: Viewer, workspaceId: string): Promise<boolean> {
+  const [ws] = await d
+    .select({ organizationId: workspaces.organizationId })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  return !!ws && ws.organizationId === viewer.organizationId;
+}
+
 export async function mayInvokeIn(d: Db, roomId: string, agentActorId: string): Promise<boolean> {
   const [member] = await d
     .select({ actorId: roomMembers.actorId })

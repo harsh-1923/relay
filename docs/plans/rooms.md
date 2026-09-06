@@ -15,7 +15,8 @@
 > **Sync and persistence live in [`local-first.md`](./local-first.md), not here.** That is a
 > separate concern with a later deadline: this document decides the tables, that one decides
 > what syncs and what survives offline. One column crosses the line — `conversations.sync_floor`
-> — and it is defined here and read only there. Nothing in that document changes this schema.
+> — and it is defined here and read only there. Nothing in that document changes this schema,
+> including its reversal of the sync engine: the tables are engine-agnostic by design.
 >
 > Like `navigation.md`, this document carries the decisions with their reasoning so they can be
 > re-argued if circumstances change, not re-litigated by default. _Candidates for
@@ -25,8 +26,8 @@
 **Done when:** a room renders its shared chat with humans and agents in the member list; a
 public room can be joined by any workspace member without asking; a private room admits only
 who a member adds; a person can hold a private chat with an agent inside a room and promote it
-to the room without a message being rewritten; and the shape proxy still authorises every
-request with primary-key lookups and no joins.
+to the room without a message being rewritten; and every read path still authorises with
+primary-key lookups and no joins.
 
 **Scope:** the `actors`, `rooms`, `room_members`, `conversations`, `conversation_members`,
 `messages` and `panels` tables, the authorisation paths over them, and the room ID type.
@@ -89,15 +90,15 @@ mirror. This is a projection, not a second source of truth: application code nev
 guarantee `users` itself already has. Invariant 4 forbids application writes to mirrored rows;
 it does not forbid the mirror's own writer maintaining a projection.
 
-The alternative — resolving names through `users` at render time — is worse than it looks under
-Electric. `users` is the WorkOS mirror and has no `organization_id`; membership lives in
-`organization_memberships`, and an Electric shape covers one table. Syncing the people in an org
-would need `id in (select user_id from organization_memberships where organization_id = $1)`,
-which works but makes every rendered name depend on a subquery and a second synced table.
+The alternative — resolving names through `users` at render time — would put a WorkOS mirror
+on every device. `users` carries emails and has no `organization_id`; scoping it to an org means
+joining through `organization_memberships`, and shipping it means every client holds the email
+of everyone in the organization, forever, for the sake of a display name.
 
-With the projection, **`actors` is the only shape the client needs to render anybody** — human
-or agent, author or member or panel-opener — filtered by `organization_id = $1` and shared by
-everyone in the org. `users` need not sync to the client at all for rooms and chat.
+With the projection, **`actors` is the only collection the client needs to render anybody** —
+human or agent, author or member or panel-opener — and `users` never leaves the server. That
+holds whichever sync engine feeds the collection; it was originally argued from Electric's
+one-table-per-shape constraint, and it survives that constraint going away.
 
 **Org-scoped, not workspace-scoped.** A human belongs to the org (a guest has an org
 membership and no workspace membership), and one actor row per person per workspace would
@@ -111,13 +112,13 @@ for that half stands unchanged: the agent service authenticates as a service, an
 is authorised by the `runs` row it references, which carries `invoked_by`, `workspace_id` and
 `organization_id`. The credential is the invoking human's.
 
-**The shape proxy only ever authorises humans.** Agents never open a shape. The moment
+**The read path only ever authorises humans.** Agents never read through it. The moment
 `actor_id` becomes the subject of a _read_ check we have given agents ambient access to rooms
 they were never invoked in, and invariant 6 is the thing standing in the way.
 
 **An agent is added to a room exactly like a person** — a `room_members` row — and that row is
 what makes it available to invoke there. So it is a precondition, checked where runs are
-created, not where shapes are served: enqueueing a run asserts `room_members(room_id,
+created, not where reads are served: enqueueing a run asserts `room_members(room_id,
 agent_actor_id)` exists. That is a useful extra guard rather than a new authority — it bounds
 an agent to the rooms it was deliberately added to, and it means removing an agent from a room
 stops future invocations without touching any credential.
@@ -171,16 +172,15 @@ Chat is not owned by a room. A conversation can sit in a room, sit privately ins
 a room, or stand detached, and it moves between those places. So `conversations` is a table in
 its own right and messages hang off it.
 
-Invariant 1 says _shapes are scoped by room, never per user_. The principle underneath it is
-**scoped by a container many people subscribe to identically** — that is what protects CDN hit
-rate (H3), and a conversation satisfies it exactly as well as a room. Everyone in a room's
-shared chat subscribes to the same conversation shape and shares the same cache entry.
+It is also the **unit of read access** for messages, which is what makes privacy structural
+rather than a filter: `mayReadConversation` decides per conversation, the message catch-up is
+scoped to the set of conversations the viewer may read, and a private conversation is simply
+not in that set. Nobody has to remember to exclude its rows, because nothing ever asks for them.
 
-This does not multiply subscriptions. An Electric shape covers one table, so a room was always
-several shapes; filtering `messages` by `conversation_id` instead of `room_id` is the same
-count — one shared conversation, plus however many private ones you are in, which is usually
-zero or one. It also makes privacy structural: a private conversation is a _different shape_
-that non-members never request, rather than rows a filter has to remember to exclude.
+This was first argued in Electric's terms — a conversation as the shape's scope, shared by
+everyone in it, so CDN collapsing survived the move off rooms. The engine changed
+(`local-first.md` D1) and the decision did not: whatever feeds the `messages` collection scopes
+by conversation, because that is where the access boundary is.
 
 ### D6 — `messages` carries no `room_id`
 
@@ -198,7 +198,7 @@ correct on every message because a conversation never crosses workspaces.
 Slack shipped channels, private groups, DMs and group DMs as separate constructs and spent
 2017 converging them into a single `conversations.*` API. Building the second construct later
 is the mistake with a known price, so: a room's shared chat, a private panel chat, a DM and a
-group DM are one table, one `messages` table, one set of shapes, distinguished by `kind` and
+group DM are one table, one `messages` table, one sync path, distinguished by `kind` and
 `visibility` and a nullable `room_id`.
 
 Their mistake was not one table — it was `is_im`, a boolean that conflated _type_ with
@@ -231,7 +231,7 @@ opened a panel" and "a person opened a panel" are the same row.
 
 **The conversation is the source of truth for a chat panel's visibility, and the panel mirrors
 it.** Two columns that must never disagree is a real hazard (R2), but the mirror is
-load-bearing rather than lazy: the panels shape is filtered by visibility, and per invariant 2
+load-bearing rather than lazy: whatever serves panels filters them by visibility, and per invariant 2
 the proxy cannot join to `conversations` to find it. Same justification as the denormalised
 `organization_id`. The promote operation writes both in one transaction.
 
@@ -368,7 +368,7 @@ create table conversations (
   visibility      text not null,                       -- shared | private
   room_id         uuid references rooms(id) on delete cascade,
   created_by      uuid not null references actors(id),
-  sync_floor      uuid,                                -- read only by local-first.md D3/D5
+  sync_floor      uuid,                                -- bootstrap floor; see local-first.md
   archived_at     timestamptz,
   created_at      timestamptz not null default now(),
   check (kind in ('main', 'panel', 'direct')),
@@ -450,34 +450,35 @@ may_read(room r, human h):
   r.is_private = true        →  room_members (r.id, h.actor_id)
 ```
 
-The proxy already reads the conversation or room row to choose a shape, so the delegation
+The endpoint already reads the conversation or room row to scope the query, so the delegation
 costs no extra round trip. Agents never appear here (D2).
 
 ## Rejected
 
-| Option                                                | Why it lost                                                                                                                                       |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Agents as rows in `users`                             | Mirror table, webhook-owned, `email not null unique`. Silent drift, the failure mode the doc warns about hardest                                  |
-| `kind` column on `users` instead of `actors`          | Same problem, plus it makes the mirror's purity a matter of discipline rather than structure                                                      |
-| Resolving names through a synced `users` shape        | `users` has no `organization_id`, so a per-org shape needs a subquery over `organization_memberships`. D1's projection removes the shape entirely |
-| Per-actor rows in `users` and a `person` link table   | Explicitly rejected in `users.ts` — server-side identity linking routes around SSO enforcement                                                    |
-| `room_id` on `messages`                               | Makes every promotion O(N) synced writes and invalidates every cache, for a move that changed one fact                                            |
-| `visibility` on `messages`, filtered per viewer       | Per-user shape. H3 and invariant 1, directly                                                                                                      |
-| Separate `dms` / `channels` tables                    | Slack built it and spent 2017 converging it                                                                                                       |
-| `is_default` boolean on conversations                 | A partial unique index says the same thing and cannot drift                                                                                       |
-| Room-level roles                                      | Invariant 5. Creator rights are a column; anything more is the FGA phase                                                                          |
-| Workspace-admin override into private rooms           | Would reintroduce a role check into the hot path D3 just cleared                                                                                  |
-| ULID                                                  | v7 gives the same ordering inside the native `uuid` type, and is an RFC                                                                           |
-| Panel visibility derived at read time                 | The proxy would have to join `panels` to `conversations`; invariant 2                                                                             |
-| Conversation membership rows for shared conversations | Would break "join a public room without permission" and amplify writes on every join                                                              |
-| Deleting a room or its contents on archive            | Archiving is reversible and destroys nothing; `archived_at` on four tables in one transaction (D4)                                                |
-| Room-name CHECK constraint                            | Slack's own naming rules have moved repeatedly; a moving vocabulary belongs in a validator, uniqueness in an index (D13)                          |
+| Option                                                | Why it lost                                                                                                                                     |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agents as rows in `users`                             | Mirror table, webhook-owned, `email not null unique`. Silent drift, the failure mode the doc warns about hardest                                |
+| `kind` column on `users` instead of `actors`          | Same problem, plus it makes the mirror's purity a matter of discipline rather than structure                                                    |
+| Syncing `users` to the client to resolve names        | A WorkOS mirror with emails on every device, scoped by a join through `organization_memberships`. D1's projection keeps it server-side entirely |
+| Per-actor rows in `users` and a `person` link table   | Explicitly rejected in `users.ts` — server-side identity linking routes around SSO enforcement                                                  |
+| `room_id` on `messages`                               | Makes every promotion O(N) synced writes and invalidates every cache, for a move that changed one fact                                          |
+| `visibility` on `messages`, filtered per viewer       | A per-viewer predicate over shared rows. The access boundary is the conversation (D5); a filter on messages is a second boundary that can drift |
+| Separate `dms` / `channels` tables                    | Slack built it and spent 2017 converging it                                                                                                     |
+| `is_default` boolean on conversations                 | A partial unique index says the same thing and cannot drift                                                                                     |
+| Room-level roles                                      | Invariant 5. Creator rights are a column; anything more is the FGA phase                                                                        |
+| Workspace-admin override into private rooms           | Would reintroduce a role check into the hot path D3 just cleared                                                                                |
+| ULID                                                  | v7 gives the same ordering inside the native `uuid` type, and is an RFC                                                                         |
+| Panel visibility derived at read time                 | The proxy would have to join `panels` to `conversations`; invariant 2                                                                           |
+| Conversation membership rows for shared conversations | Would break "join a public room without permission" and amplify writes on every join                                                            |
+| Deleting a room or its contents on archive            | Archiving is reversible and destroys nothing; `archived_at` on four tables in one transaction (D4)                                              |
+| Room-name CHECK constraint                            | Slack's own naming rules have moved repeatedly; a moving vocabulary belongs in a validator, uniqueness in an index (D13)                        |
 
 ## Hazards
 
 - **R1 — a per-viewer message filter.** The first request that looks like "hide this message
-  from some room members" turns one room-shared shape into a shape per viewer. That is H3, and
-  the answer is always a separate conversation, never a filter.
+  from some room members" puts a per-viewer predicate on the messages read path, and the
+  access boundary stops being the conversation. The answer is always a separate conversation,
+  never a filter — that is what D5 is for.
 - **R2 — the promote transaction.** `conversations.visibility` and `panels.visibility` must
   move together or a shared panel wraps a private conversation. One transaction, and a test
   that asserts they never disagree.
@@ -493,8 +494,10 @@ costs no extra round trip. Agents never appear here (D2).
   `NO_WORKSPACE_ID` in `tenancy.ts`. That set is designed so the exemption is an edit someone
   justifies in review — `connections` needs the same and does not have it yet.
 - **R8 — `sync_floor` looks like a dead column.** Nothing in this document reads it, and the
-  first person to run a schema audit will propose dropping it. It is the only bound Electric can
-  express on a message shape; see `local-first.md` D3.
+  first person to run a schema audit will propose dropping it. It is the **bootstrap floor** —
+  how far back a brand-new device fetches a conversation on first sync — and it is a column
+  rather than a policy because the right answer legitimately differs per conversation. See
+  `local-first.md`, _Table by table_.
 
 ## Steps
 

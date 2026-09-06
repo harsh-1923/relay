@@ -266,6 +266,7 @@ async function services() {
   for (const [port, what] of [
     [54322, 'Postgres'],
     [54323, 'Supabase Studio'],
+    [54330, 'Electric'],
   ]) {
     if (ours.has(port)) {
       skip(`:${port} already served by ${what}`);
@@ -316,6 +317,21 @@ async function services() {
       warn('skipped — schema is behind the migrations on disk');
     }
   }
+
+  /**
+   * Electric last, and deliberately after migrations: it opens a replication slot against
+   * this database, and starting it before the schema is current means it begins streaming a
+   * shape of tables that are about to change underneath it.
+   *
+   * Joins the network `supabase start` created, so it reaches Postgres container-to-container
+   * rather than back out through the published port.
+   */
+  run('docker', ['compose', '-f', 'tooling/docker/compose.yaml', 'up', '-d']);
+  await waitFor('Electric', async () => {
+    const r = tryRun('curl', ['-fsS', '-m', '2', 'http://localhost:54330/v1/health']);
+    return r.ok && r.out.includes('"active"');
+  });
+  step('electric :54330 — replication active');
 
   const server = readEnv(join(ROOT, 'apps/server/.env'));
   if (!server.WORKOS_API_KEY || server.WORKOS_API_KEY === 'set-me') {
@@ -380,5 +396,6 @@ try {
 console.log(`\n  ${green('ready')}`);
 console.log(`    studio    ${bold('http://localhost:54323')} ${dim('— browse the database here')}`);
 console.log(dim('    postgres  postgresql://postgres:postgres@localhost:54322/postgres'));
+console.log(dim('    electric  http://localhost:54330 — /v1/health, /v1/shape'));
 console.log(dim('    workos    remote, from apps/server/.env'));
 console.log(dim('\n    check it with `pnpm health`, stop it with `pnpm services:stop`\n'));

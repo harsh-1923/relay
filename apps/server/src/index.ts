@@ -8,6 +8,7 @@ import {
   type InvitableRole,
 } from './auth/invitations';
 import { createOrganizationForUser } from './auth/signup';
+import { handleShape } from './shapes/index';
 import {
   clearOAuthCookie,
   clearSessionCookie,
@@ -25,8 +26,9 @@ import type { Env as SignupEnv } from './auth/signup';
 import { db } from './db';
 import { createWorkspace, isMemberOf, switchTargets } from './tenancy';
 import { handleWorkosWebhook, type Env as WebhookEnv } from './webhooks/workos';
+import type { Env as ShapeEnv } from './shapes/index';
 
-type Env = WebhookEnv & SignupEnv & InvitationEnv;
+type Env = WebhookEnv & SignupEnv & InvitationEnv & ShapeEnv;
 
 const withCookies = (headers: Record<string, string>, cookies: string[]) => {
   const h = new Headers(headers);
@@ -61,6 +63,15 @@ export default {
     const url = new URL(request.url);
     const secure = url.protocol === 'https:';
     const um = workos(env).userManagement;
+
+    /**
+     * `/shapes/:name` — the read path. A prefix rather than a case because the shape name is a
+     * path segment, and it is matched against the registry in `packages/schema` rather than
+     * against anything the client can invent.
+     */
+    if (url.pathname.startsWith('/shapes/')) {
+      return handleShape(request, env, url.pathname.slice('/shapes/'.length));
+    }
 
     switch (url.pathname) {
       case '/auth/login': {

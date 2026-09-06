@@ -8,5 +8,6 @@
  * validators/ drizzle-zod schemas, used by the write endpoint AND the client
  */
 
+export * from './shapes/index';
 export * from './tables/index';
 export * from './tenancy';
