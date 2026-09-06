@@ -65,6 +65,8 @@ export function useShellCommands({
     name: 'Toggle sidebar',
     category: 'Application',
     hotkey: 'Mod+B',
+    // No panel exists to collapse on the signed-out screen — see TitleBar's `hasSidebar`.
+    available: session != null,
     run: onToggleSidebar,
   });
 

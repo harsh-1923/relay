@@ -290,7 +290,12 @@ function Shell() {
         <CommandPalette />
         {/* Above the sidebar, not beside it: the tabs belong to the window, not to a
             workspace, and the traffic lights sit in this strip. */}
-        <TitleBar tabs={tabs} gutterWidth={sidebarWidth} onToggleSidebar={togglePanel} />
+        <TitleBar
+          tabs={tabs}
+          gutterWidth={sidebarWidth}
+          onToggleSidebar={togglePanel}
+          hasSidebar={session != null}
+        />
         {session ? (
           /**
            * `open` is pinned: the provider is here for the menu's context, not for layout.

@@ -53,21 +53,40 @@ export function TitleBar({
   onNew,
   gutterWidth,
   onToggleSidebar,
+  hasSidebar,
 }: {
   tabs: TabsApi;
   onNew?: () => void;
   gutterWidth: number;
   onToggleSidebar: () => void;
+  /** Whether a sidebar (and therefore a workspace to hold tabs) exists at all — false on the
+   *  signed-out screen. */
+  hasSidebar: boolean;
 }) {
   const inset = useTitleBarInset();
   const platform = detectPlatform();
 
   if (!platform.tabs) return null;
 
+  if (!hasSidebar) {
+    // Signed out: no sidebar, no workspace, so nothing to dock and nowhere to navigate — the
+    // gutter, the tab strip and every button in this file are about a workspace that does not
+    // exist yet. What has to stay is the bar itself: it is the window's drag handle, and
+    // without one the window could not be moved from this screen. Just the traffic-light inset
+    // is kept, so the lights land where every other screen puts them.
+    return (
+      <div
+        data-slot="title-bar"
+        className="bg-background flex h-9 shrink-0 items-center"
+        style={{ WebkitAppRegion: 'drag', paddingLeft: inset } as CSSProperties}
+      />
+    );
+  }
+
   return (
     <div
       data-slot="title-bar"
-      className="bg-background flex h-9 shrink-0 items-center border-b"
+      className="bg-background flex h-9 shrink-0 items-center"
       // `app-region` has no Tailwind utility and is not in React's CSSProperties.
       style={{ WebkitAppRegion: 'drag' } as CSSProperties}
     >
