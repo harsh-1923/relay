@@ -184,16 +184,6 @@ export function createWriter(store: StripStore, delayMs = 300): StripWriter {
 }
 
 /**
- * What to show on launch.
- *
- * The URL wins unless it is the root. Landing on a specific address — a deep link, a refresh
- * mid-room — has to go there, so the stored active tab only decides when the address says
- * nothing, which is what a cold launch looks like. Opening a location already in the strip
- * activates that tab rather than adding a second one onto the same place.
- *
- * See `docs/plans/navigation.md` (D13, D14).
- */
-/**
  * Where to go once a strip has been restored, or null to stay put.
  *
  * The other half of D13. At the root the stored active tab decides, and deciding means going
@@ -209,13 +199,29 @@ export function bootTarget(strip: Strip, path: string): string | null {
   return active && active.location !== '/' ? active.location : null;
 }
 
-export function restore(stored: Strip | null, path: string, fallback: () => Tab): Strip {
+/**
+ * What to show on launch.
+ *
+ * The URL wins unless it is the root: landing on a specific address — a deep link, a refresh
+ * mid-room — has to go there, so the stored active tab only decides when the address names no
+ * focus point, which is what a cold launch looks like. An address already docked activates
+ * that tab rather than adding a second one onto the same place.
+ *
+ * `focus` is the address to dock and activate, or null when it is not a focus point at all —
+ * the workspace root above all, which is the container the tabs live inside.
+ *
+ * See `docs/plans/navigation.md` (D13, D14).
+ */
+export function restore(
+  stored: Strip | null,
+  focus: string | null,
+  mint: (location: string) => Tab,
+): Strip {
   const strip = stored ?? { tabs: [], activeId: null };
-  if (strip.tabs.length === 0) return transitions.open(strip, fallback());
-  if (path === '/') return strip;
+  // Not a focus point — the workspace root, or the address before one resolves. Whatever was
+  // docked stays docked; nothing is active.
+  if (focus === null) return transitions.deactivate(strip);
 
-  const existing = strip.tabs.find((t) => t.location === path);
-  return existing
-    ? transitions.activate(strip, existing.id)
-    : transitions.open(strip, { ...fallback(), location: path });
+  const existing = strip.tabs.find((t) => t.location === focus);
+  return existing ? transitions.activate(strip, existing.id) : transitions.open(strip, mint(focus));
 }

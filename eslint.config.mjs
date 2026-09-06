@@ -65,7 +65,7 @@ export default [
       'no-restricted-syntax': [
         'error',
         {
-          selector: 'Literal[value=/^\\/(w\\/|r\\/|settings|sign-in)/]',
+          selector: 'Literal[value=/^\\/(w\\/|r\\/|workspaces|settings|sign-in)/]',
           message: 'Route literals belong in lib/paths.ts. Use paths.* or patterns.*.',
         },
       ],

@@ -89,11 +89,78 @@ export async function createDefaultWorkspace(
   return workspace!;
 }
 
-/** `name`: what the user sees. The UI never says "organization". */
+/**
+ * A slug free within the organization.
+ *
+ * `workspaces_org_slug_key` is unique per organization, and two workspaces called "Design" is
+ * an ordinary thing to want rather than an error worth showing anyone — so the second becomes
+ * `design-2`. Bounded, because a loop against a unique constraint is otherwise unbounded when
+ * something else is wrong.
+ */
+async function freeSlug(d: Db, organizationId: string, name: string): Promise<string> {
+  const base = slugify(name);
+  const taken = await d
+    .select({ slug: workspaces.slug })
+    .from(workspaces)
+    .where(eq(workspaces.organizationId, organizationId));
+  const used = new Set(taken.map((r) => r.slug));
+  if (!used.has(base)) return base;
+  for (let n = 2; n <= 50; n++) if (!used.has(`${base}-${n}`)) return `${base}-${n}`;
+  return `${base}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+/**
+ * An additional workspace in an organization that already has one.
+ *
+ * The creator joins it as `admin`, which is the only membership it starts with: a workspace is
+ * not visible to the rest of the organization by being created, it is visible to whoever is a
+ * member. That is invariant 5 read literally — access is decided at workspace and room level,
+ * never inherited from the tenant above.
+ *
+ * `is_default` stays false. Exactly one workspace per organization is the default — the one
+ * signup made, and the one an invited member is dropped into.
+ */
+export async function createWorkspace(
+  d: Db,
+  { organizationId, userId, name }: { organizationId: string; userId: string; name: string },
+) {
+  return d.transaction(async (tx) => {
+    const [workspace] = await tx
+      .insert(workspaces)
+      .values({
+        organizationId,
+        name,
+        slug: await freeSlug(tx, organizationId, name),
+        isDefault: false,
+      })
+      .returning();
+
+    await tx
+      .insert(workspaceMemberships)
+      .values({ workspaceId: workspace!.id, userId, organizationId, role: 'admin' })
+      .onConflictDoNothing();
+
+    return workspace!;
+  });
+}
+
+/**
+ * One workspace the user can open.
+ *
+ * `name`: the workspace's name — what the user sees, and still never the word "organization".
+ * `organizationName`: only for disambiguating two workspaces that share a name across
+ *   organizations. Not a label the UI leads with.
+ * `workspaceId`: never null now that a row exists per workspace membership rather than per
+ *   organization.
+ * `roles`: organization roles, which decide who may invite or create — not who may open this,
+ *   which the membership itself already answered.
+ */
 export interface SwitchTarget {
   organizationId: string;
+  organizationName: string;
   name: string;
-  workspaceId: string | null;
+  workspaceId: string;
+  isDefault: boolean;
   roles: string[];
 }
 
@@ -105,29 +172,49 @@ export interface SwitchTarget {
  * exist without a workspace — a signup that died between the two, or an invitation whose
  * org we mirrored before its workspace was made.
  */
+/**
+ * Every workspace this user can open — one row per workspace, not per organization.
+ *
+ * Driven by `workspace_memberships`, because that is what access actually means below the
+ * tenant: being in the organization is not being in the workspace (invariant 5). An
+ * organization the user belongs to but has no workspace membership in contributes nothing,
+ * which is correct — there is nothing there to open.
+ *
+ * The organization still rides along on every row. The client needs it to know whether
+ * opening a workspace is a navigation or a session re-issue: switching *within* an
+ * organization needs no re-auth, switching across one does.
+ */
 export async function switchTargets(d: Db, userId: string): Promise<SwitchTarget[]> {
   const rows = await d
     .select({
       organizationId: organizations.id,
-      orgName: organizations.name,
+      organizationName: organizations.name,
       workspaceId: workspaces.id,
       workspaceName: workspaces.name,
+      isDefault: workspaces.isDefault,
       roles: organizationMemberships.roles,
     })
-    .from(organizationMemberships)
-    .innerJoin(organizations, eq(organizations.id, organizationMemberships.organizationId))
-    .leftJoin(
-      workspaces,
-      and(eq(workspaces.organizationId, organizations.id), eq(workspaces.isDefault, true)),
+    .from(workspaceMemberships)
+    .innerJoin(workspaces, eq(workspaces.id, workspaceMemberships.workspaceId))
+    .innerJoin(organizations, eq(organizations.id, workspaces.organizationId))
+    .innerJoin(
+      organizationMemberships,
+      and(
+        eq(organizationMemberships.userId, workspaceMemberships.userId),
+        eq(organizationMemberships.organizationId, workspaces.organizationId),
+      ),
     )
     .where(
-      and(eq(organizationMemberships.userId, userId), eq(organizationMemberships.status, 'active')),
-    );
+      and(eq(workspaceMemberships.userId, userId), eq(organizationMemberships.status, 'active')),
+    )
+    .orderBy(organizations.name, workspaces.name);
 
   return rows.map((r) => ({
     organizationId: r.organizationId,
-    name: r.workspaceName ?? r.orgName,
+    organizationName: r.organizationName,
+    name: r.workspaceName,
     workspaceId: r.workspaceId,
+    isDefault: r.isDefault,
     roles: r.roles,
   }));
 }

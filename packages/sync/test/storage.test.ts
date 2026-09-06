@@ -170,31 +170,38 @@ describe('createWriter', () => {
 const writerFor = (store: ReturnType<typeof memoryStore>) => createWriter(store, 300);
 
 describe('restore', () => {
-  const fallback = () => tab('home', { location: '/w/w1' });
+  const mint = (location: string) => tab('minted', { location });
 
-  it('opens the fallback when nothing was stored', () => {
-    const s = restore(null, '/', fallback);
-    expect(s.tabs.map((t) => t.id)).toEqual(['home']);
-    expect(s.activeId).toBe('home');
+  it('docks nothing when the address is not a focus point', () => {
+    // The workspace root: the container the tabs live inside, never one of them.
+    const s = restore(null, null, mint);
+    expect(s.tabs).toEqual([]);
+    expect(s.activeId).toBeNull();
   });
 
-  it('keeps the stored active tab on a cold launch at the root', () => {
-    const s = restore({ ...strip(tab('a'), tab('b')), activeId: 'a' }, '/', fallback);
-    expect(s.activeId).toBe('a');
+  it('keeps what was docked but activates none of it at a non-focus address', () => {
+    const s = restore({ ...strip(tab('a'), tab('b')), activeId: 'a' }, null, mint);
     expect(s.tabs).toHaveLength(2);
+    expect(s.activeId).toBeNull();
   });
 
   it('activates the tab already at the address rather than duplicating it', () => {
-    const s = restore({ ...strip(tab('a'), tab('b')), activeId: 'a' }, '/w/w1/r/b', fallback);
+    const s = restore({ ...strip(tab('a'), tab('b')), activeId: 'a' }, '/w/w1/r/b', mint);
     expect(s.activeId).toBe('b');
     expect(s.tabs).toHaveLength(2);
   });
 
-  it('opens a tab for an address the strip does not hold — a pasted link must land', () => {
-    const s = restore(strip(tab('a')), '/settings', fallback);
+  it('docks a focus point the strip does not hold — a pasted link must land', () => {
+    const s = restore(strip(tab('a')), '/settings', mint);
     expect(s.tabs).toHaveLength(2);
     expect(s.tabs.at(-1)?.location).toBe('/settings');
     expect(s.activeId).toBe(s.tabs.at(-1)?.id);
+  });
+
+  it('docks the first tab from an empty strip', () => {
+    const s = restore(null, '/settings', mint);
+    expect(s.tabs.map((t) => t.location)).toEqual(['/settings']);
+    expect(s.activeId).toBe(s.tabs[0]!.id);
   });
 });
 

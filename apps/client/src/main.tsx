@@ -1,9 +1,13 @@
 import { QueryClientProvider } from '@tanstack/react-query';
-import { StrictMode, type ReactNode } from 'react';
+import { StrictMode, useCallback, useEffect, useState } from 'react';
+import { useDefaultLayout, usePanelRef, type LayoutStorage } from 'react-resizable-panels';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
+import { BrowserRouter, matchPath, Navigate, Route, Routes, useLocation } from 'react-router';
 
+import { AppSidebar } from '@/components/app-sidebar';
 import { TitleBar } from '@/components/title-bar';
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
+import { SidebarProvider } from '@/components/ui/sidebar';
 import { useDeepLinkNavigation } from '@/lib/deep-links';
 import { paths, patterns } from '@/lib/paths';
 import { queryClient } from '@/lib/query';
@@ -17,6 +21,28 @@ import { Workspace } from '@/routes/workspace';
 import './styles.css';
 
 /**
+ * Where the sidebar layout is remembered. Per device, like the tab strip: how things are
+ * arranged is local. Guarded the way `webStore` is, because `localStorage` throws outright in
+ * a private window and a layout not being remembered is not worth taking the app down for.
+ */
+const layoutStorage: LayoutStorage = {
+  getItem: (key) => {
+    try {
+      return globalThis.localStorage?.getItem(key) ?? null;
+    } catch {
+      return null;
+    }
+  },
+  setItem: (key, value) => {
+    try {
+      globalThis.localStorage?.setItem(key, value);
+    } catch {
+      // Out of quota, or storage refused. The layout stays correct for this run.
+    }
+  },
+};
+
+/**
  * `/` is not a place — it resolves to one.
  *
  * With no organization there is nothing scoping this user to a tenant, so the only thing to
@@ -28,17 +54,16 @@ function Root({
   workspaces,
   workspacesPending,
   onCreate,
-  menu,
 }: {
   session: Session;
   workspaces: SwitchTarget[];
   workspacesPending: boolean;
   onCreate: (name: string) => Promise<string | null>;
-  menu: ReactNode;
 }) {
   if (!session.organizationId) return <CreateWorkspace onCreate={onCreate} />;
 
-  const target = workspaces.find((w) => w.organizationId === session.organizationId);
+  const inOrg = workspaces.filter((w) => w.organizationId === session.organizationId);
+  const target = inOrg.find((w) => w.isDefault) ?? inOrg[0];
   if (target?.workspaceId) return <Navigate to={paths.workspace(target.workspaceId)} replace />;
   if (workspacesPending) return <div className="min-h-full" />;
 
@@ -56,9 +81,8 @@ function Root({
         <h1 className="text-lg font-semibold">No workspace here</h1>
         <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
           This organization has no workspace. If you have just signed up, reload in a moment —
-          otherwise open a different one below.
+          otherwise switch to a different one from the sidebar.
         </p>
-        {menu}
       </div>
     </div>
   );
@@ -71,12 +95,10 @@ function App({ api }: { api: SessionApi }) {
     cancelSignIn,
     signOut,
     createWorkspace,
+    addWorkspace,
     workspaces,
     workspacesPending,
     switchTo,
-    accounts,
-    switchAccount,
-    addAccount,
   } = api;
 
   if (state.status === 'loading') return <div className="min-h-full" />;
@@ -101,20 +123,8 @@ function App({ api }: { api: SessionApi }) {
   }
 
   const { session } = state;
-  const home = workspaces.find((w) => w.organizationId === session.organizationId);
-
-  // One switcher, rendered by whichever screen is up — including the one that has nothing
-  // else on it.
-  const menu = (
-    <Switcher
-      session={session}
-      workspaces={workspaces}
-      onSwitch={switchTo}
-      accounts={accounts}
-      onSwitchAccount={switchAccount}
-      onAddAccount={addAccount}
-    />
-  );
+  const inOrg = workspaces.filter((w) => w.organizationId === session.organizationId);
+  const home = inOrg.find((w) => w.isDefault) ?? inOrg[0];
 
   return (
     <Routes>
@@ -126,7 +136,6 @@ function App({ api }: { api: SessionApi }) {
             workspaces={workspaces}
             workspacesPending={workspacesPending}
             onCreate={createWorkspace}
-            menu={menu}
           />
         }
       />
@@ -139,7 +148,24 @@ function App({ api }: { api: SessionApi }) {
             workspaces={workspaces}
             workspacesPending={workspacesPending}
             onSwitch={switchTo}
-            menu={menu}
+          />
+        }
+      />
+      <Route
+        path={patterns.newWorkspace}
+        element={
+          <CreateWorkspace
+            heading="New workspace"
+            blurb="A separate space inside this organization. Only people you add to it can see it."
+            cancelTo={home?.workspaceId ? paths.workspace(home.workspaceId) : paths.root()}
+            onCreate={async (name) => {
+              try {
+                await addWorkspace(name);
+                return null;
+              } catch (e) {
+                return e instanceof Error ? e.message : 'Could not create the workspace.';
+              }
+            }}
           />
         }
       />
@@ -168,6 +194,10 @@ function App({ api }: { api: SessionApi }) {
  */
 function Shell() {
   const api = useSession();
+  const { pathname } = useLocation();
+  // Which workspace is on screen, read from the address rather than the session — the session
+  // does not hold one, by design (invariant 3).
+  const currentWorkspaceId = matchPath(patterns.workspace, pathname)?.params.workspaceId ?? null;
 
   const session = api.state.status === 'in' ? api.state.session : null;
   const key =
@@ -175,29 +205,131 @@ function Shell() {
       ? { accountId: session.userId, organizationId: session.organizationId }
       : null;
 
-  const tabs = useTabs(key, api.workspaces);
-  const home = api.workspaces.find((w) => w.organizationId === session?.organizationId);
+  const inOrg = api.workspaces.filter((w) => w.organizationId === session?.organizationId);
+  const home = inOrg.find((w) => w.isDefault) ?? inOrg[0];
+  const homeLocation = home?.workspaceId ? paths.workspace(home.workspaceId) : paths.root();
 
+  const tabs = useTabs(key, api.workspaces, homeLocation);
+
+  // The panel's imperative handle: what the toggle button and ⌘B act on.
+  const panel = usePanelRef();
+  /**
+   * The sidebar's live width in pixels. The title bar keeps a gutter this wide so the tabs
+   * begin where the content column does.
+   *
+   * Observed on a div of our own that fills the panel, with a ResizeObserver. Two library
+   * routes were tried first and both came up empty in v4: the panel's `onResize` fired once at
+   * mount and never for a pointer drag (it is destructured upstream as `onResizeUnstable`),
+   * and its `elementRef` never delivered the element to a callback ref. A plain React ref on a
+   * plain element has no such semantics to get wrong, and the observer reports every real
+   * width change — drag frames, collapse, restore, window resize — which is exactly the
+   * contract the gutter needs.
+   */
+  const [sidebarWidth, setSidebarWidth] = useState(256);
+  const [sidebarEl, setSidebarEl] = useState<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!sidebarEl) return;
+    const ro = new ResizeObserver(([entry]) => {
+      if (entry) setSidebarWidth(Math.round(entry.contentRect.width));
+    });
+    ro.observe(sidebarEl);
+    return () => ro.disconnect();
+  }, [sidebarEl]);
+  // v4 does not persist on its own: this hands back a `defaultLayout` to start from and an
+  // `onLayoutChanged` that writes every user-driven change. Panel ids tie the saved sizes to
+  // the panels they belong to.
+  const layout = useDefaultLayout({
+    id: 'relay.sidebar',
+    storage: layoutStorage,
+    panelIds: ['sidebar', 'content'],
+  });
+  const togglePanel = useCallback(() => {
+    const p = panel.current;
+    if (!p) return;
+    if (p.isCollapsed()) p.expand();
+    else p.collapse();
+  }, [panel]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'b' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        togglePanel();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [togglePanel]);
   useDeepLinkNavigation(
     tabs.strip
       ? (path) => tabs.open(path, titleFor(path.split('?')[0]!, api.workspaces))
       : undefined,
   );
 
+  // One switcher: the sidebar header holds it, and the screens that have nothing else on
+  // them still need it to be reachable.
+  const menu = session ? (
+    <Switcher
+      session={session}
+      workspaces={api.workspaces}
+      currentWorkspaceId={currentWorkspaceId}
+      onSwitch={api.switchTo}
+      accounts={api.accounts}
+      onSwitchAccount={api.switchAccount}
+      onAddAccount={api.addAccount}
+    />
+  ) : null;
+
+  const content = <App api={api} />;
+
   return (
     <TabsProvider value={tabs}>
       <div className="flex h-full flex-col">
-        <TitleBar
-          tabs={tabs}
-          onNew={
-            home?.workspaceId
-              ? () => tabs.open(paths.workspace(home.workspaceId!), home.name)
-              : undefined
-          }
-        />
-        <div className="min-h-0 flex-1">
-          <App api={api} />
-        </div>
+        {/* Above the sidebar, not beside it: the tabs belong to the window, not to a
+            workspace, and the traffic lights sit in this strip. */}
+        <TitleBar tabs={tabs} gutterWidth={sidebarWidth} onToggleSidebar={togglePanel} />
+        {session ? (
+          /**
+           * `open` is pinned: the provider is here for the menu's context, not for layout.
+           * Width and whether the sidebar is open belong to the panel group below, which
+           * persists them under its `id` and makes the divider a real drag handle.
+           */
+          <SidebarProvider open className="min-h-0 flex-1">
+            <ResizablePanelGroup
+              orientation="horizontal"
+              id="relay.sidebar"
+              className="min-h-0 flex-1"
+              defaultLayout={layout.defaultLayout}
+              onLayoutChanged={layout.onLayoutChanged}
+            >
+              <ResizablePanel
+                id="sidebar"
+                panelRef={panel}
+                defaultSize={256}
+                minSize={180}
+                maxSize={480}
+                collapsible
+                collapsedSize={0}
+              >
+                {/* Fills the panel, so its width is the panel's — see `sidebarWidth`. */}
+                <div ref={setSidebarEl} className="h-full min-h-0">
+                  <AppSidebar
+                    workspace={home}
+                    email={session.email}
+                    onSignOut={api.signOut}
+                    switcher={menu}
+                  />
+                </div>
+              </ResizablePanel>
+              <ResizableHandle />
+              <ResizablePanel id="content" className="flex min-h-0 flex-col">
+                <div className="min-h-0 flex-1">{content}</div>
+              </ResizablePanel>
+            </ResizablePanelGroup>
+          </SidebarProvider>
+        ) : (
+          // Signed out there is nothing to navigate; the sign-in screen owns the window.
+          <div className="min-h-0 flex-1">{content}</div>
+        )}
       </div>
     </TabsProvider>
   );

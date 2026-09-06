@@ -12,6 +12,7 @@ import {
 import { db } from '../src/db';
 import {
   createDefaultWorkspace,
+  createWorkspace,
   defaultWorkspace,
   isMemberOf,
   joinDefaultWorkspace,
@@ -134,9 +135,9 @@ describe('joinDefaultWorkspace — the invitation arm', () => {
 });
 
 describe('switchTargets — what the workspace menu shows', () => {
-  it('labels an org by its default workspace, and falls back to the org name', async () => {
-    // A second org with no workspace: signup can die between the two, and an invitation can
-    // mirror an org before anyone makes one. The menu must still list it.
+  it('lists one row per workspace membership, not one per organization', async () => {
+    // An organization the user belongs to but has no workspace in contributes nothing: being
+    // in the tenant is not being in the workspace (invariant 5), and there is nothing to open.
     await d.insert(organizations).values({ id: ORG2, name: 'Second Org' }).onConflictDoNothing();
     await d
       .insert(organizationMemberships)
@@ -159,14 +160,39 @@ describe('switchTargets — what the workspace menu shows', () => {
       .onConflictDoNothing();
 
     const targets = await switchTargets(d, OWNER);
-    const byOrg = Object.fromEntries(targets.map((t) => [t.organizationId, t]));
 
-    expect(targets).toHaveLength(2);
-    expect(byOrg[ORG]?.name).toBe('Acme Corp'); // the default workspace
-    expect(byOrg[ORG]?.workspaceId).toBeTruthy();
-    expect(byOrg[ORG2]?.name).toBe('Second Org'); // no workspace — org name
-    expect(byOrg[ORG2]?.workspaceId).toBeNull();
-    expect(byOrg[ORG2]?.roles).toEqual(['admin']);
+    expect(targets.map((t) => t.organizationId)).toEqual([ORG]);
+    expect(targets[0]?.name).toBe('Acme Corp'); // the workspace
+    expect(targets[0]?.organizationName).toBe('Tenancy Test'); // the tenant above it
+    expect(targets[0]?.workspaceId).toBeTruthy();
+    expect(targets[0]?.isDefault).toBe(true);
+    expect(targets[0]?.roles).toEqual(['owner']);
+  });
+
+  it('lists a second workspace in the same organization, and only for its members', async () => {
+    const extra = await createWorkspace(d, {
+      organizationId: ORG,
+      userId: OWNER,
+      name: 'Design',
+    });
+
+    const mine = await switchTargets(d, OWNER);
+    expect(mine.map((t) => t.name).sort()).toEqual(['Acme Corp', 'Design']);
+    expect(mine.find((t) => t.name === 'Design')?.isDefault).toBe(false);
+
+    // The other member was never added to it, so it is not theirs to open.
+    const theirs = await switchTargets(d, INVITEE);
+    expect(theirs.map((t) => t.name)).not.toContain('Design');
+    expect(extra.slug).toBe('design');
+  });
+
+  it('gives a colliding name its own slug rather than failing', async () => {
+    const again = await createWorkspace(d, {
+      organizationId: ORG,
+      userId: OWNER,
+      name: 'Design',
+    });
+    expect(again.slug).toBe('design-2');
   });
 
   it('excludes memberships that are not active', async () => {
@@ -176,7 +202,7 @@ describe('switchTargets — what the workspace menu shows', () => {
       .where(eq(organizationMemberships.id, 'om_01TEST00000000000000000B'));
 
     const targets = await switchTargets(d, OWNER);
-    expect(targets.map((t) => t.organizationId)).toEqual([ORG]);
+    expect(targets.every((t) => t.organizationId === ORG)).toBe(true);
   });
 });
 

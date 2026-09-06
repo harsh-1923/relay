@@ -14,11 +14,18 @@ export interface Session {
   canInvite?: boolean;
 }
 
-/** An organization the user can switch into, labelled by its default workspace. */
+/**
+ * One workspace the user can open — a row per workspace membership, not per organization.
+ *
+ * `organizationName` is only for telling apart two workspaces that share a name across
+ * organizations; the UI leads with `name` and still never says "organization".
+ */
 export interface SwitchTarget {
   organizationId: string;
+  organizationName: string;
   name: string;
-  workspaceId: string | null;
+  workspaceId: string;
+  isDefault: boolean;
   roles: string[];
 }
 
@@ -37,10 +44,12 @@ export interface Account {
 }
 
 /**
- * `createWorkspace`: creates the org and its default workspace. Resolves to an error message, or null.
- * `workspaces`: everything this user can switch into. Empty until loaded.
+ * `workspaces`: every workspace this user can open. Empty until loaded.
  * `workspacesPending`: still loading — the difference between "no workspace yet" and "not
  *   asked yet", which `/` has to tell apart before it decides where to send you.
+ * `createWorkspace`: signup — only reachable with no organization yet.
+ * `addWorkspace`: another workspace inside the organization already held. Resolves to the new
+ *   workspace id, or throws with a message.
  * `switchTo`: moves the session into another org. Resolves to an error message, or null.
  * `accounts`: signed-in accounts. Empty on the browser, which holds one session by construction.
  * `switchAccount`: becomes another signed-in account. Desktop only.
@@ -52,6 +61,7 @@ export interface SessionApi {
   cancelSignIn: () => void;
   signOut: () => void;
   createWorkspace: (name: string) => Promise<string | null>;
+  addWorkspace: (name: string) => Promise<string>;
   workspaces: SwitchTarget[];
   workspacesPending: boolean;
   switchTo: (organizationId: string) => Promise<string | null>;
@@ -200,6 +210,31 @@ export function useSession(): SessionApi {
   });
 
   /**
+   * Another workspace inside the organization already held — no WorkOS call and no re-issued
+   * session, because a workspace is ours and the session already names this organization.
+   */
+  const addWorkspace = useMutation({
+    mutationFn: async (name: string) => {
+      const r = await authed('/auth/workspaces', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (!r) throw new Error('Not signed in.');
+      if (r.ok) return (r.body as { workspaceId: string }).workspaceId;
+
+      const code = (r.body as { error?: string } | null)?.error;
+      if (code === 'name_required') throw new Error('Give the workspace a name.');
+      if (code === 'forbidden') throw new Error('Only an owner or admin can add a workspace.');
+      throw new Error('Could not create the workspace. Try again.');
+    },
+    // A new workspace is a new switch target, and the creator is already a member of it.
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: keys.workspaces });
+    },
+  });
+
+  /**
    * Switching re-issues the session rather than editing a claim — the target org may demand
    * a stronger authentication than this session has. A 409 means exactly that, and carries
    * where to go instead.
@@ -223,9 +258,18 @@ export function useSession(): SessionApi {
       if (body?.error === 'not_a_member') return 'You are not a member of that workspace.';
       return 'Could not switch. Try again.';
     },
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: keys.session });
-      void qc.invalidateQueries({ queryKey: keys.workspaces });
+    /**
+     * Awaited, so the switch is not "done" until the session that carries the new organization
+     * has actually loaded. Callers navigate when this resolves, and anywhere they might send
+     * the user — `/` above all — decides where to go by reading the session. Left
+     * fire-and-forget, that read happens against the organization the user just left, and the
+     * app bounces straight back to where it started.
+     */
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: keys.session }),
+        qc.invalidateQueries({ queryKey: keys.workspaces }),
+      ]);
     },
   });
 
@@ -243,6 +287,7 @@ export function useSession(): SessionApi {
     cancelSignIn,
     signOut,
     createWorkspace: createWorkspace.mutateAsync,
+    addWorkspace: addWorkspace.mutateAsync,
     workspaces: workspaces.data ?? [],
     // `enabled` keeps this pending while there is no session, so pair it with the fetch state.
     workspacesPending: workspaces.isPending && workspaces.fetchStatus !== 'idle',

@@ -1,10 +1,12 @@
-import { useMutation } from '@tanstack/react-query';
+import { useNavigate } from 'react-router';
 
+import { useOpenWorkspace } from '@/lib/open';
+import { paths } from '@/lib/paths';
 import type { Account, Session, SwitchTarget } from '@/lib/session';
 import { WorkspaceMenu } from '@/routes/workspace-menu';
 
 /**
- * The org and account switcher, with the in-flight state it needs.
+ * The workspace and account switcher, with the in-flight state it needs.
  *
  * Built once and handed to whichever screen shows it, because the screen that needs it most
  * is the one that has nothing else on it: an organization with no workspace can only be left
@@ -13,6 +15,7 @@ import { WorkspaceMenu } from '@/routes/workspace-menu';
 export function Switcher({
   session,
   workspaces,
+  currentWorkspaceId,
   onSwitch,
   accounts,
   onSwitchAccount,
@@ -20,34 +23,32 @@ export function Switcher({
 }: {
   session: Session;
   workspaces: SwitchTarget[];
+  currentWorkspaceId: string | null;
   onSwitch: (organizationId: string) => Promise<string | null>;
   accounts: Account[];
   onSwitchAccount: (userId: string) => void;
   onAddAccount: () => void;
 }) {
-  // The mutation carries which org is in flight, so the menu can show it without a second
-  // piece of state tracking the same thing.
-  const swap = useMutation({
-    mutationFn: async (organizationId: string) => {
-      const error = await onSwitch(organizationId);
-      if (error) throw new Error(error);
-    },
-  });
+  const navigate = useNavigate();
+  const open = useOpenWorkspace(session.organizationId, onSwitch);
 
   return (
     <>
       <WorkspaceMenu
         workspaces={workspaces}
-        current={session.organizationId}
-        busy={swap.isPending ? swap.variables : null}
-        onSwitch={(organizationId) => swap.mutate(organizationId)}
+        currentWorkspaceId={currentWorkspaceId}
+        // Only a cross-organization open is ever in flight long enough to say so; within one
+        // organization it is a navigation and lands immediately.
+        busy={open.isPending ? (open.variables?.workspaceId ?? null) : null}
+        onOpen={(target) => open.mutate(target)}
+        onNewWorkspace={session.canInvite ? () => void navigate(paths.newWorkspace()) : undefined}
         accounts={accounts}
         onSwitchAccount={onSwitchAccount}
         onAddAccount={onAddAccount}
       />
-      {swap.isError && (
+      {open.isError && (
         <p role="alert" className="text-destructive mt-4 text-sm">
-          {swap.error.message}
+          {open.error.message}
         </p>
       )}
     </>

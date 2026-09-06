@@ -17,7 +17,6 @@ const strip = (...tabs: Tab[]): Strip => ({
 });
 
 const ids = (s: Strip) => s.tabs.map((t) => t.id);
-const fallback = () => tab('home', { location: '/w/w1' });
 
 describe('open', () => {
   it('appends and activates', () => {
@@ -43,39 +42,33 @@ describe('open', () => {
 
 describe('close', () => {
   it('lands on the right neighbour', () => {
-    const s = transitions.close(
-      { ...strip(tab('a'), tab('b'), tab('c')), activeId: 'b' },
-      'b',
-      fallback,
-    );
+    const s = transitions.close({ ...strip(tab('a'), tab('b'), tab('c')), activeId: 'b' }, 'b');
     expect(ids(s)).toEqual(['a', 'c']);
     expect(s.activeId).toBe('c');
   });
 
   it('falls back to the left when the active tab was last', () => {
-    const s = transitions.close(strip(tab('a'), tab('b')), 'b', fallback);
+    const s = transitions.close(strip(tab('a'), tab('b')), 'b');
     expect(ids(s)).toEqual(['a']);
     expect(s.activeId).toBe('a');
   });
 
   it('leaves the active tab alone when closing a different one', () => {
-    const s = transitions.close(
-      { ...strip(tab('a'), tab('b'), tab('c')), activeId: 'a' },
-      'c',
-      fallback,
-    );
+    const s = transitions.close({ ...strip(tab('a'), tab('b'), tab('c')), activeId: 'a' }, 'c');
     expect(s.activeId).toBe('a');
   });
 
-  it('never empties the strip', () => {
-    const s = transitions.close(strip(tab('a')), 'a', fallback);
-    expect(ids(s)).toEqual(['home']);
-    expect(s.activeId).toBe('home');
+  it('empties the strip when the last tab closes', () => {
+    // Not a failure state: nothing docked means the workspace root is on screen, and a
+    // workspace is the container the tabs live inside rather than one of them.
+    const s = transitions.close(strip(tab('a')), 'a');
+    expect(s.tabs).toEqual([]);
+    expect(s.activeId).toBeNull();
   });
 
   it('ignores a tab that is not there', () => {
     const before = strip(tab('a'));
-    expect(transitions.close(before, 'nope', fallback)).toBe(before);
+    expect(transitions.close(before, 'nope')).toBe(before);
   });
 });
 

@@ -8,8 +8,10 @@ import type { TabsApi } from '@/lib/tabs';
 /**
  * The strip itself.
  *
- * `app-region: no-drag` is not decoration: the title bar around this is a drag region, and a
- * drag region swallows mouse events. Without it the tabs render and nothing responds.
+ * The title bar is the window's drag region — press on it and the window moves, the way a
+ * menu bar does. So the strip *inherits* `drag`, and only the things that need clicks opt
+ * out: each tab, and the new-tab button. Get this backwards (the whole strip `no-drag`) and
+ * the bar is only draggable in the few pixels no tab happens to cover.
  */
 export function TabStrip({ tabs, onNew }: { tabs: TabsApi; onNew?: () => void }) {
   const { strip } = tabs;
@@ -19,7 +21,6 @@ export function TabStrip({ tabs, onNew }: { tabs: TabsApi; onNew?: () => void })
     <div
       data-slot="tab-strip"
       className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-2"
-      style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
     >
       {strip.tabs.map((tab) => {
         const active = tab.id === strip.activeId;
@@ -28,6 +29,9 @@ export function TabStrip({ tabs, onNew }: { tabs: TabsApi; onNew?: () => void })
             key={tab.id}
             data-slot="tab"
             data-active={active || undefined}
+            // A tab must opt out of the drag region or its clicks never land; the strip
+            // around it stays a drag region, so the bar moves the window like a menu bar.
+            style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
             className={cn(
               'group flex h-7 min-w-0 shrink-0 items-center gap-1 rounded-md px-2 text-xs',
               active ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50',
@@ -75,6 +79,7 @@ export function TabStrip({ tabs, onNew }: { tabs: TabsApi; onNew?: () => void })
           type="button"
           aria-label="New tab"
           className="text-muted-foreground hover:bg-muted shrink-0 rounded-md p-1"
+          style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
           onClick={onNew}
         >
           <PlusDefault className="size-3.5" />

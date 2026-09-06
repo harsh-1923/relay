@@ -23,7 +23,7 @@ import {
 import type { Env as InvitationEnv } from './auth/invitations';
 import type { Env as SignupEnv } from './auth/signup';
 import { db } from './db';
-import { isMemberOf, switchTargets } from './tenancy';
+import { createWorkspace, isMemberOf, switchTargets } from './tenancy';
 import { handleWorkosWebhook, type Env as WebhookEnv } from './webhooks/workos';
 
 type Env = WebhookEnv & SignupEnv & InvitationEnv;
@@ -230,6 +230,35 @@ export default {
       case '/auth/workspaces': {
         const u = await unsealSession(request, env);
         if (!u) return json({ error: 'unauthenticated' }, 401);
+
+        /**
+         * An additional workspace in the organization the session is already in.
+         *
+         * No WorkOS call: a workspace is ours, not theirs, and nothing upstream knows about
+         * it. So no re-issued session either — the session already names this organization,
+         * and workspace is navigation state rather than a claim (invariant 3).
+         */
+        if (request.method === 'POST') {
+          const organizationId = u.session.organizationId;
+          if (!organizationId) return json({ error: 'no_organization' }, 400);
+          if (!(await canInvite(env, u.session.userId, organizationId))) {
+            return json({ error: 'forbidden' }, 403);
+          }
+          const { name } = (await request.json().catch(() => ({}))) as { name?: string };
+          if (!name?.trim()) return json({ error: 'name_required' }, 400);
+
+          const workspace = await createWorkspace(db(env), {
+            organizationId,
+            userId: u.session.userId,
+            name: name.trim(),
+          });
+          const created = { workspaceId: workspace.id, name: workspace.name };
+          if (!u.refreshed) return json(created, 201);
+          if (request.headers.get('Authorization'))
+            return json({ ...created, refreshedSession: u.refreshed }, 201);
+          return json(created, 201, [setSessionCookie(u.refreshed, secure)]);
+        }
+
         const targets = await switchTargets(db(env), u.session.userId);
         const body = { current: u.session.organizationId, workspaces: targets };
         if (!u.refreshed) return json(body);

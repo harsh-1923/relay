@@ -38,14 +38,12 @@ export function Workspace({
   workspaces,
   workspacesPending,
   onSwitch,
-  menu,
 }: {
   session: Session;
   onSignOut: () => void;
   workspaces: SwitchTarget[];
   workspacesPending: boolean;
   onSwitch: (organizationId: string) => Promise<string | null>;
-  menu: ReactNode;
 }) {
   const { workspaceId } = useWorkspaceParams();
 
@@ -126,8 +124,6 @@ export function Workspace({
           <Row label="organization_id" value={session.organizationId ?? 'none'} />
           <Row label="surface" value={platform.panels ? 'desktop' : 'browser'} />
         </div>
-
-        {menu}
 
         <div className="mt-6 flex gap-2">
           <Button render={<Link to={paths.settings()} />} variant="outline" className="flex-1">

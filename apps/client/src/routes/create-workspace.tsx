@@ -1,15 +1,20 @@
 import { useForm } from '@tanstack/react-form';
 import { useMutation } from '@tanstack/react-query';
+import { Link } from 'react-router';
 
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 /**
- * Signup, as the user sees it: name a workspace.
+ * Naming a workspace. Used for both the ones that exist.
  *
- * The org is created too, with the same name, and is never mentioned — Slack hides that level
- * until Enterprise Grid and so do we. Both rows always exist, so the level can be revealed
- * later without a migration.
+ * At signup this is the whole of it: the organization is created too, with the same name, and
+ * is never mentioned — Slack hides that level until Enterprise Grid and so do we. Both rows
+ * always exist, so the level can be revealed later without a migration.
+ *
+ * Afterwards the same form adds a workspace *inside* the organization already held, which
+ * touches nothing upstream. The difference lives entirely in the `onCreate` handed in; this
+ * form does not know or care which happened.
  *
  * `onCreate` stays a callback rather than a query key: it re-issues the session, which is
  * state the session hook owns. The mutation is here for its pending and error handling, not
@@ -17,8 +22,15 @@ import { cn } from '@/lib/utils';
  */
 export function CreateWorkspace({
   onCreate,
+  heading = 'Create a workspace',
+  blurb = 'Where you and your agents work. You can invite people once it exists.',
+  cancelTo,
 }: {
   onCreate: (name: string) => Promise<string | null>;
+  heading?: string;
+  blurb?: string;
+  /** Absent at signup, where there is nowhere to go back to. */
+  cancelTo?: string;
 }) {
   const create = useMutation({
     mutationFn: async (name: string) => {
@@ -45,10 +57,8 @@ export function CreateWorkspace({
         }}
         className="w-full max-w-sm"
       >
-        <h1 className="text-2xl font-semibold tracking-tight">Create a workspace</h1>
-        <p className="text-muted-foreground mt-2 text-sm">
-          Where you and your agents work. You can invite people once it exists.
-        </p>
+        <h1 className="text-2xl font-semibold tracking-tight">{heading}</h1>
+        <p className="text-muted-foreground mt-2 text-sm">{blurb}</p>
 
         <form.Field
           name="name"
@@ -88,6 +98,12 @@ export function CreateWorkspace({
             </Button>
           )}
         </form.Subscribe>
+
+        {cancelTo && (
+          <Button render={<Link to={cancelTo} />} variant="outline" className="mt-2 w-full">
+            Cancel
+          </Button>
+        )}
 
         <form.Subscribe selector={(s) => s.errorMap.onSubmit}>
           {(invalid) =>

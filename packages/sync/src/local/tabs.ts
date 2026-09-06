@@ -61,17 +61,25 @@ export const transitions = {
 
   /**
    * Closing the tab you are looking at lands on its right neighbour, the way every browser
-   * does it, falling back left when it was the last one. Never leaves the strip empty — a
-   * window with no tabs has nothing to render and no way back — so the caller supplies what
-   * to fall back to.
+   * does it, falling back left when it was the last one. Closing the last leaves the strip
+   * empty rather than inventing a tab: an empty strip means the workspace root is on screen,
+   * which is where a workspace belongs — a container, not a focus point.
    */
-  close: (s: Strip, id: string, fallback: () => Tab): Strip => {
+  close: (s: Strip, id: string): Strip => {
     const i = s.tabs.findIndex((t) => t.id === id);
     if (i === -1) return s;
     const tabs = s.tabs.filter((t) => t.id !== id);
-    if (tabs.length === 0) return transitions.open(empty, fallback());
+    // Closing the last one leaves nothing docked, which is a real state: the workspace root
+    // is on screen and the strip is empty. The caller navigates there.
+    if (tabs.length === 0) return empty;
     return { tabs, activeId: s.activeId === id ? (tabs[i] ?? tabs[i - 1]!).id : s.activeId };
   },
+
+  /**
+   * Nothing docked is in focus. The workspace root is on screen — the container the tabs live
+   * inside, never one of them — so the tabs stay put and none is active.
+   */
+  deactivate: (s: Strip): Strip => (s.activeId === null ? s : { ...s, activeId: null }),
 
   /** The router is the authority on where the active tab points; this only records it. */
   navigate: (s: Strip, location: string, title: string): Strip => ({

@@ -20,6 +20,8 @@ export const paths = {
   root: () => '/',
   signIn: () => '/sign-in',
   settings: () => '/settings',
+  /** Creating one, which is a place: you can link to it and land back on it. */
+  newWorkspace: () => '/workspaces/new',
   workspace: (workspaceId: string) => `/w/${workspaceId}`,
   room: (workspaceId: string, roomId: string) => `/w/${workspaceId}/r/${roomId}`,
   /** A message is a permalink into a room, not a place of its own — hence the query. */
@@ -32,6 +34,7 @@ export const patterns = {
   root: '/',
   signIn: '/sign-in',
   settings: '/settings',
+  newWorkspace: '/workspaces/new',
   workspace: '/w/:workspaceId',
   room: '/w/:workspaceId/r/:roomId',
 } as const;

@@ -95,6 +95,24 @@ claim to know where the user is, is the Cordis bug class.
 workspace in my org, do I ask before switching, does it open here or in a new tab. Keeping the
 first pure is what makes it trivially testable and impossible to couple to the router.
 
+### D6a — A workspace is never a tab
+
+The strip holds **focus points inside a workspace** — rooms, settings, profile — not the
+workspace itself. A workspace is the container they live in: the sidebar belongs to it, and
+the tabs are the several things you are looking at within it. Docking one would put the
+container inside its own contents.
+
+Two states follow, and both are ordinary rather than errors:
+
+- **The strip can be empty.** Nothing docked means the workspace root is on screen. Closing
+  the last tab therefore leaves you there instead of inventing a replacement tab.
+- **`activeId` can be null while tabs remain.** Navigating to the workspace root deactivates
+  without undocking, so what you had open is still there when you come back.
+
+`isFocus()` in `apps/client/src/lib/tabs.ts` is the only place that decides, and
+`packages/sync/local` stays grammar-agnostic: it is handed a `focus` that is already resolved,
+or null.
+
 ### D6 — A tab holds a location, not a room
 
 A tab can point at `/settings`, `/profile`, a room, anything the router serves. Stored as the
@@ -415,6 +433,46 @@ say it needs them.
   any network call" by the verifier gate.
 - **N6 — two accounts in one org.** The key is composite. Keying on org alone leaks one
   person's room titles into another's session.
+- **N13 — the title bar's gutter is the sidebar's live width.** Laid out the way Linear does
+  it: a gutter exactly as wide as the sidebar holds the window controls, the sidebar toggle
+  and the navigation buttons (history, back, forward — placeholders for now), so the first tab
+  begins where the content column does. It floors at `MIN_GUTTER` (216px) so the buttons keep a
+  home when the sidebar collapses to nothing. The width is read by a `ResizeObserver` on a
+  plain div of our own that fills the panel — **not** the panel's `onResize` (fired once at
+  mount, never for a drag in v4) and **not** its `elementRef` (never delivered the element to a
+  callback ref). A lesson worth keeping: two of the three "the library is broken" readings were
+  actually Fast Refresh. Adding hooks forces a remount that resets the element state, and the
+  callback ref does not re-fire on an already-mounted element, so the observer silently never
+  attached under HMR. A hard reload proved the code correct. **Before blaming a library from
+  inside a hot-reloaded dev session, reload.**
+  The bar is also the window's drag region, the way a menu bar is: press on it and the
+  window moves, double-click and macOS zooms it. The strip _inherits_ `drag`; only the things
+  that need clicks opt out — each tab, the new-tab button, the gutter buttons. It was briefly
+  the other way round (the whole strip `no-drag`), which left the bar draggable only in the
+  pixels no tab happened to cover. Verified as a computed `-webkit-app-region` map: root,
+  gutter spacer, strip, and the space after the last tab all `drag`; tabs and buttons `no-drag`.
+- **N12 — the sidebar edge is `react-resizable-panels`, not a hand-rolled drag.** shadcn's
+  `SidebarRail` is a click-to-toggle button wearing a `w-resize` cursor: the affordance lies.
+  Rather than write a drag handler into it, the sidebar sits inside shadcn's `resizable`
+  (`react-resizable-panels`) with `collapsible` and `collapsedSize={0}` — drag resizes, drag
+  past `minSize` closes, and ⌘B / the toggle drive the panel's imperative handle. Two v4
+  gotchas cost a round trip each: a bare `defaultSize`/`minSize`/`maxSize` number is
+  **pixels**, not percent (percent is the string `"20%"`), and persistence is **not automatic**
+  — `useDefaultLayout({ id, storage, panelIds })` supplies `defaultLayout` and
+  `onLayoutChanged`, and the panels need matching `id`s. Width and collapsed state both survive
+  a reload under `relay.sidebar`. This supersedes the earlier note about the upstream
+  `sidebar_state` cookie: that cookie is still written (by the provider, whose `open` is pinned
+  and inert), but nothing depends on it.
+- **N10 — a switch is not done when the request returns, it is done when the session says so.**
+  `/auth/switch` re-issues the session, but until the session query refetches, everything that
+  reads it still names the organization you left. Navigating in that window sends you back:
+  `/` resolves against the stale organization and redirects to its workspace, and the cross-org
+  prompt then offers to switch to the organization you just left. So the switch mutation awaits
+  its own invalidations, and only then is anyone allowed to navigate.
+- **N11 — a strip must only be written back under the key it was read with.** During a switch
+  the address moves before the session does, so for a moment the strip in memory belongs to the
+  previous organization while the router is already elsewhere. Writing then points the old
+  organization's remembered tab at the new one's workspace.
 - **N8 — `useNavigate()` is not referentially stable.** It changes with the location, so an
   effect that lists it as a dependency re-runs on every navigation. In the strip's load effect
   that meant re-reading from disk each time, which silently turned "move this tab" into "open

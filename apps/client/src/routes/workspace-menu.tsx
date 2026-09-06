@@ -21,56 +21,76 @@ const row =
  */
 export function WorkspaceMenu({
   workspaces,
-  current,
+  currentWorkspaceId,
   busy,
-  onSwitch,
+  onOpen,
+  onNewWorkspace,
   accounts,
   onSwitchAccount,
   onAddAccount,
 }: {
   workspaces: SwitchTarget[];
-  current: string | null;
+  currentWorkspaceId: string | null;
   busy: string | null;
-  onSwitch: (organizationId: string) => void;
+  onOpen: (target: SwitchTarget) => void;
+  onNewWorkspace?: () => void;
   accounts: Account[];
   onSwitchAccount: (userId: string) => void;
   onAddAccount: () => void;
 }) {
   const others = accounts.filter((a) => !a.active);
-  // On the browser `accounts` is empty, so this collapses to the org switcher alone.
-  if (workspaces.length < 2 && accounts.length === 0) return null;
+  // A name is ambiguous only when another organization has a workspace called the same thing.
+  const ambiguous = new Set(
+    workspaces.map((w) => w.name).filter((name, i, all) => all.indexOf(name) !== i),
+  );
 
   return (
-    <div className="border-border mt-6 space-y-4 border-t pt-4">
-      {workspaces.length > 1 && (
-        <div>
-          <p className="text-muted-foreground mb-2 text-xs">Switch workspace</p>
-          <ul className="space-y-1">
-            {workspaces.map((w) => {
-              const active = w.organizationId === current;
-              return (
-                <li key={w.organizationId}>
-                  <button
-                    disabled={active || busy !== null}
-                    onClick={() => onSwitch(w.organizationId)}
-                    className={cn(
-                      row,
-                      'disabled:cursor-default',
-                      active ? 'text-foreground' : 'hover:bg-muted disabled:opacity-50',
+    <div className="border-borderspace-y-4">
+      <div>
+        <p className="text-muted-foreground mb-2 text-xs select-none">Switch workspace</p>
+        <ul className="space-y-1">
+          {workspaces.map((w) => {
+            const active = w.workspaceId === currentWorkspaceId;
+            return (
+              <li key={w.workspaceId}>
+                <button
+                  disabled={active || busy !== null}
+                  onClick={() => onOpen(w)}
+                  className={cn(
+                    row,
+                    'disabled:cursor-default',
+                    active ? 'text-foreground' : 'hover:bg-muted disabled:opacity-50',
+                  )}
+                >
+                  <span className="truncate">
+                    {w.name}
+                    {ambiguous.has(w.name) && (
+                      <span className="text-muted-foreground"> · {w.organizationName}</span>
                     )}
-                  >
-                    <span className="truncate">{w.name}</span>
-                    {active && <CheckTickSingle className="size-4 shrink-0" aria-label="current" />}
-                    {busy === w.organizationId && (
-                      <span className="text-muted-foreground text-xs">switching…</span>
-                    )}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
+                  </span>
+                  {active && <CheckTickSingle className="size-4 shrink-0" aria-label="current" />}
+                  {busy === w.workspaceId && (
+                    <span className="text-muted-foreground text-xs">opening…</span>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+          {onNewWorkspace && (
+            <li>
+              <button
+                onClick={onNewWorkspace}
+                className={cn(row, 'hover:bg-muted text-muted-foreground')}
+              >
+                <span className="flex items-center gap-2">
+                  <PlusDefault className="size-4 shrink-0" />
+                  New workspace
+                </span>
+              </button>
+            </li>
+          )}
+        </ul>
+      </div>
 
       {accounts.length > 0 && (
         <div>
