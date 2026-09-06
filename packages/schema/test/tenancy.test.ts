@@ -9,8 +9,8 @@ describe('tenancy (H7)', () => {
     expect(auditTenancy(schema)).toEqual([]);
   });
 
-  // The schema is still empty, so these fixtures are what prove the guard actually bites.
-  // Delete them only if the real schema ever covers every case below.
+  // The real schema never violates the rule, so these fixtures are what prove the guard
+  // actually bites. They are fixtures, not the real `rooms` and `room_members`.
   it('flags a tenant table missing both columns', () => {
     const rooms = pgTable('rooms', {
       id: uuid('id').primaryKey(),

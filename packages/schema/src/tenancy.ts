@@ -15,8 +15,16 @@ import { Table, getTableColumns, getTableName, is } from 'drizzle-orm';
 /** Identity, and the tenant root itself. Neither can carry an `organization_id`. */
 const NO_ORGANIZATION_ID = new Set(['users', 'organizations']);
 
-/** At or above the workspace line. Everything below it must carry `workspace_id`. */
+/**
+ * At or above the workspace line. Everything below it must carry `workspace_id`.
+ *
+ * `actors` is the deliberate one: a human belongs to the organization, not to a workspace —
+ * a guest holds an org membership and no workspace membership at all — and one actor row per
+ * person per workspace would fragment authorship across them. `connections` will need the
+ * same exemption when Phase 7 lands, for the same reason.
+ */
 const NO_WORKSPACE_ID = new Set([
+  'actors',
   'users',
   'organizations',
   'organization_memberships',
