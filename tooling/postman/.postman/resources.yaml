@@ -1,0 +1,15 @@
+# Use this workspace to collaborate
+workspace:
+  id: b9caf63e-8f78-40b7-9630-75a39013a69d
+
+localResources:
+  collections:
+    - ../relay.postman_collection.json
+  environments:
+    - ../relay.local.postman_environment.json
+
+# Each entry here maps a local resource to one or more corresponding objects in Postman Cloud
+
+cloudResources:
+  collections:
+    ../postman/collections/relay — API: 3fe9c744-414f-44a5-aea8-4c17017f6c53

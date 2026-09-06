@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "relay-server",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  // The WorkOS SDK and postgres.js need Node built-ins. Everything else stays Web-standard.
+  "compatibility_flags": ["nodejs_compat"],
+  "dev": { "port": 8787 },
+  "observability": { "enabled": true },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      // Placeholder until a real Hyperdrive config exists; `wrangler dev` uses the local
+      // connection string below and never contacts Cloudflare for it.
+      "id": "relay-local-placeholder",
+      "localConnectionString": "postgresql://postgres:postgres@localhost:54322/postgres",
+    },
+  ],
+}

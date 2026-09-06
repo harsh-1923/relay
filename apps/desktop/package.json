@@ -1,0 +1,20 @@
+{
+  "name": "@relay/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "dev": "tsc && electron .",
+    "build": "tsc",
+    "icon": "node resources/icon.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@relay/tsconfig": "workspace:*",
+    "@types/node": "^26.4.1",
+    "electron": "^44.2.0",
+    "vitest": "^5.0.0"
+  },
+  "main": "dist/main/index.js"
+}

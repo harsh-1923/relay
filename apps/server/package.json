@@ -1,0 +1,23 @@
+{
+  "name": "@relay/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --env-file .env",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260904.1",
+    "@relay/tsconfig": "workspace:*",
+    "vitest": "^5.0.0",
+    "wrangler": "^4.129.0"
+  },
+  "dependencies": {
+    "@relay/schema": "workspace:*",
+    "@workos-inc/node": "^10.13.0",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9"
+  }
+}

@@ -41,8 +41,12 @@ a solo user is an org with one member, exactly as in Slack.
 Rules that apply in every phase and are cheap now, expensive later. Violating any of these is a
 design regression, not a trade-off.
 
-1. **Shapes are scoped by room, never per user.** Per-user shapes destroy CDN hit rate _and_
-   multiply the Electric write meter.
+1. **Shapes are scoped by a container many subscribers share — room _or_ conversation — never
+   per user.** Per-user shapes destroy CDN hit rate _and_ multiply the Electric write meter.
+   Chat is owned by a conversation rather than a room (Phase 0), and everyone in one subscribes
+   to the same shape, so the protection is unchanged. One named exception: the membership
+   directory ("which rooms am I in") is per-user by definition, and a request cannot answer it
+   because a request is not local-first. It is tens of rows changing a few times a week.
 2. **`organization_id` sits on every tenant table, and `workspace_id` on everything below the
    workspace** — including where either is derivable by join. The shape proxy authorises on every
    request and must never join to do it; a missing hop can't silently leak across tenants.
@@ -102,69 +106,79 @@ Referenced from the phases where they first apply.
 
 ## Decisions
 
-### Monorepo: npm workspaces
+### Monorepo: pnpm workspaces
 
 ```
 .
-├── package.json                  # workspaces: ["apps/*", "packages/*"]
-├── tsconfig.base.json
+├── pnpm-workspace.yaml           # apps/*, packages/*, packages/connectors/*, tooling/*
 │
 ├── apps/
-│   ├── web/                      # Vite React — browser surface
-│   │   ├── src/main.tsx          # entry, wires persist-idb
-│   │   └── vite.config.ts
+│   ├── client/                   # Vite React — THE UI. One build, two distributions:
+│   │                             #   deployed as the browser surface, and zipped into
+│   │                             #   the desktop UI bundle.
 │   │
-│   ├── desktop/                  # Electron — primary surface
-│   │   ├── main/                 # main process, webview hardening,
-│   │   │                         #   partitions, autoUpdater
-│   │   ├── preload/              # contextBridge — capability API
-│   │   ├── renderer/
-│   │   │   └── src/main.tsx      # entry, wires persist-sqlite
-│   │   └── electron-builder.yml  # signing, notarisation, feed
+│   ├── desktop/                  # Electron SHELL only — no renderer source
+│   │   ├── main/                 # window management, webview hardening, partitions,
+│   │   │                         #   tray, deep links, electron-updater, UI-bundle updater
+│   │   ├── preload/              # contextBridge — capability API, incl. SQLite
+│   │   └── electron-builder.yml
 │   │
-│   ├── marketing/                # site + /docs route
+│   ├── site/                     # marketing + /docs route (Q10: one app)
 │   │
-│   └── server/                   # API: shape proxy + write endpoint
-│       └── src/
-│           ├── shapes/           # membership check → Electric
-│           └── writes/
+│   ├── server/                   # EDGE Worker: shape proxy + write endpoint
+│   │   └── src/{auth,shapes,writes}/
+│   ├── broker/                   # CONTAINER or Worker: holds every credential
+│   └── runtime/                  # CONTAINER: pi loop, holds nothing
 │
-└── packages/
-    ├── schema/                   # ← single source of truth
-    │   └── src/                  # shape defs, run_event types,
-    │                             #   validators. Used by client,
-    │                             #   server AND agent.
-    │
-    ├── ui/                       # uncompiled TSX, main → src/index.ts
-    │   └── src/
-    │       ├── room/
-    │       ├── trace/            # run event labels
-    │       ├── panel/            # webview — behind capability flag
-    │       └── platform.ts       # capability interface
-    │
-    ├── sync/
-    │   └── src/
-    │       ├── collections/      # createCollection(electricOptions)
-    │       ├── local/            # local-only: drafts, UI state
-    │       │                     #   (real migrations — never dropped)
-    │       ├── queries/          # client-side joins across shapes
-    │       ├── subscriptions.ts  # effect-with-inverse registry
-    │       └── persister.ts      # interface + offset contract
-    │
-    ├── persist-sqlite/           # Electron adapter over
-    │                             #   db-sqlite-persistence-core
-    ├── persist-idb/              # browser adapter
-    │
-    └── agent/                    # pi SDK embedding
-        └── src/
-            ├── runtime.ts        # one instance per run
-            ├── events.ts         # pi.on("tool_call") → labels
-            └── connectors/
-                ├── github/       # extension + skills + prompts
-                ├── linear/
-                ├── slack/
-                └── notion/
+├── packages/
+│   ├── schema/                   # ← single source of truth. Drizzle tables, from which
+│   │                             #   the migrations are generated. Shapes, run_event
+│   │                             #   types, validators, the H7 tenancy guard.
+│   ├── sync/
+│   │   └── src/
+│   │       ├── collections/      # createCollection(electricOptions)
+│   │       ├── local/            # local-only: drafts, panel layout, UI state
+│   │       │                     #   (real migrations — never dropped)
+│   │       ├── queries/          # client-side joins across shapes
+│   │       ├── subscriptions.ts  # effect-with-inverse registry
+│   │       ├── persister.ts      # interface + offset contract
+│   │       └── platform.ts       # capability interface
+│   │
+│   ├── persist-sqlite/           # Electron adapter. Runs in the PRELOAD, not the
+│   │                             #   renderer — the native module never enters a bundle.
+│   ├── persist-idb/              # browser adapter
+│   │
+│   └── connectors/               # each folder is its own pi package
+│       └── github/ linear/ slack/ notion/
+│
+├── tooling/                      # things you RUN, not import
+│   ├── bootstrap/                # `pnpm run up`
+│   └── docker/                   # local services (Electric, Phase 2)
+│
+└── supabase/                     # local Postgres + generated migrations
 ```
+
+**There is one UI, not two.** Earlier drafts had `packages/ui` shared between `apps/web`
+and an Electron renderer, because web and desktop were going to be different clients. They
+are not: the desktop renderer loads a **local bundle of the same build** (see Phase 11), so
+`apps/client` compiles once and ships two ways. A package boundary with a single consumer
+is overhead, so `packages/ui` does not exist and `platform.ts` sits next to the persister
+interface, which is where the capability question is actually asked.
+
+**`apps/client` ships uncompiled internal packages.** Every package's `exports` points at
+source, not `dist`. No build step at the package boundary, no watch process, no stale
+artefacts. Because of that, each app's build must typecheck across the packages it consumes,
+and the shared tsconfig uses `Bundler` module resolution — nothing here is ever resolved by
+Node itself, so `NodeNext` would only force `./x.js` specifiers pointing at `./x.ts` files.
+
+**`persist-sqlite` is a separate package** so its native module can never end up in a
+browser bundle — enforced by construction, and by a lint rule as a second line.
+
+**Each connector folder mirrors pi's package layout**, so any one can be extracted and
+published later without restructuring. Each exposes two entry points, and the split is a
+security boundary: `./manifest` (tool names, schemas, `requiresApproval`) is safe for the
+runtime; `./execute` is broker-only, and the runtime importing it is invariant 6 violated in
+the import graph. Lint blocks it.
 
 **`ui` ships uncompiled.** Its `package.json` main points at source, not `dist`. No build step, no
 watch process, no stale artefacts — each app's Vite build compiles it as if the components lived
@@ -177,7 +191,7 @@ bundle — enforced by construction, not discipline.
 **Each connector folder mirrors pi's package layout**, so any one can be extracted and published
 later without restructuring.
 
-Because npm workspaces give no compile step at the package boundary, **each app's build must
+Because there is no compile step at the package boundary, **each app's build must
 typecheck across the packages it consumes**.
 
 ### Tenancy: a direct parallel to Slack
@@ -211,7 +225,42 @@ The direction is forced: an enterprise wants one Okta connection company-wide, n
 workspace. So WorkOS Organization must map to _our_ Organization, and workspace is invisible to
 WorkOS.
 
-### Schema
+### Schema: Drizzle is the source of truth, SQL is generated
+
+**Primary keys are UUIDv7** (RFC 9562), not v4. Ids sort chronologically and insert with
+locality while staying a native `uuid`, so a message shape can be bounded by a primary-key range
+and history pages by keyset with no second ordering column. Ours carries sub-millisecond precision
+(§6.2 method 3) so ids minted in the same millisecond still ascend — without it, message order,
+which _is_ the read path of a chat table, is arbitrary within a millisecond. Postgres 18 ships
+`uuidv7()` and supersedes our function.
+
+**Decided.** Tables are defined in TypeScript in `packages/schema/src/tables/`;
+`drizzle-kit generate` emits SQL into `supabase/migrations/` with Supabase-compatible
+timestamps, so the Supabase CLI stays the only thing that _runs_ migrations.
+
+The alternative was hand-writing DDL and types separately and asserting parity in CI. With
+Drizzle the drift cannot happen — TypeScript is the source, and validators derive from the
+same definitions via `drizzle-zod`. It also turns the H7 guard into a fast unit test over
+real source rather than an introspection job against a live database.
+
+**There is no `db:push`, deliberately.** `generate` diffs TypeScript against Drizzle's own
+snapshot and needs no database. `push` introspects the live one — it would find the
+hand-written `PARTITION BY RANGE` on `run_events`, fail to express it in TypeScript, and try
+to "fix" it by rewriting the table.
+
+**DDL Drizzle cannot express** — the partitioning and its management cron — goes in an empty
+migration from `generate --custom`. Custom SQL never enters the snapshot, so it produces no
+spurious diffs afterwards.
+
+**CHECK constraints only on columns we own.** `workspace_memberships.role` gets one.
+`organization_memberships.status` and `roles` do not: WorkOS owns those vocabularies, and a
+value they add later would start failing webhook ingestion on a table whose whole job is to
+accept whatever upstream says. Constraining a mirror against a vocabulary you do not control
+turns someone else's product change into your outage.
+
+**No seed data.** Seeding a mirror of WorkOS means inventing ids that do not exist upstream —
+dangling foreign keys that look fine until a real login hits one. Rows exist because the real
+signup and webhook flow created them.
 
 ```sql
 -- ── Mirrored from WorkOS (webhook-maintained, never written directly) ──
@@ -274,10 +323,11 @@ create table rooms (
 
 create table room_members (
   room_id         uuid not null references rooms(id),
-  user_id         text not null references users(id),
+  actor_id        uuid not null references actors(id),         -- people and agents alike
+  workspace_id    uuid not null references workspaces(id),     -- denorm; the sketch omitted it
   organization_id text not null references organizations(id),  -- denorm
   created_at      timestamptz not null default now(),
-  primary key (room_id, user_id)
+  primary key (room_id, actor_id)
 );
 
 create table agents (
@@ -341,8 +391,25 @@ create org (name)
   → org membership (roles: ['owner'])
   → default workspace (same name, is_default true)
   → workspace membership (role: 'admin')
-  → room "general"
 ```
+
+**It stops at the workspace.** Earlier drafts ended with a room called "general". Nothing in
+Phase 1 reads a room, the exit criterion does not mention one, and the room schema is still
+moving with product decisions — so building against it now means building it twice. Adding an
+insert here later costs a backfill of the orgs created in between.
+
+**Signup writes the org and membership mirror rows itself**, from the API response, using the
+same idempotent upsert the webhook uses. `workspaces.organization_id` is a foreign key into a
+webhook-populated table and the webhook arrives seconds later, or — locally, without a tunnel
+— never. This is not a second source of truth: the response _is_ WorkOS's data, keyed on
+WorkOS's id, and the webhook that follows finds the row and changes nothing.
+
+**Creating an organization is not idempotent, and the SDK's `idempotencyKey` does not make it
+so** — it guards only that call's own internal retry. Verified against the live API: two
+requests carrying the same `Idempotency-Key` produced two organizations. Signup therefore
+serialises per user with a Postgres advisory lock and re-checks the user's memberships before
+creating. The lock is held across a network call, which is worth it because nothing in the
+product can merge duplicate organizations.
 
 ### Role model
 
@@ -360,14 +427,75 @@ combined-role explosion.
 B" is not representable in an org membership, and neither are workspace invitations. Storing the
 role locally is fine at launch; FGA later replaces the _evaluation_, not the storage.
 
-**What triggers the FGA phase:** guests. Slack has single-channel and multi-channel guests, and a
-guest in one room but not the workspace breaks a simple membership check. That is the signal.
+### What each org role means
+
+The slugs alone invite reinvention later, so:
+
+| Role     | Means                                                                                               |
+| -------- | --------------------------------------------------------------------------------------------------- |
+| `owner`  | Created the org. The only role that may delete it or transfer ownership                             |
+| `admin`  | Manages members and settings, but cannot end the org                                                |
+| `member` | Normal. Belongs to a workspace and sees its rooms                                                   |
+| `guest`  | **Sees only rooms they were explicitly added to — not public rooms, not the workspace's room list** |
+
+Permissions are left empty on all four. Nothing reads a permission yet — authorization is
+membership in Postgres — so adding them before something checks one would be inventing a
+vocabulary blind.
+
+### Guests are a union, not a graph — FGA is not their trigger
+
+> **Amends the earlier claim** that guests trigger the FGA phase. They do not, and the
+> reasoning that follows is why. Per-event trace visibility does.
+
+A guest is invited to specific rooms and not to the workspace. That looks like it breaks the
+membership check, and it would — except that **a guest still holds an org membership**, which
+they get for free because WorkOS invites to the _organization_; it has no lower level.
+
+| Table                      | Guest                 | Member           |
+| -------------------------- | --------------------- | ---------------- |
+| `organization_memberships` | ✅ role `guest`       | ✅ role `member` |
+| `workspace_memberships`    | ❌ none               | ✅               |
+| `room_members`             | ✅ invited rooms only | ✅               |
+
+That org membership is what keeps everything intact: the session is
+`{user_id, organization_id}` and every tenant table is scoped by `organization_id`. A guest
+has both. Room authorisation then reads `room_members(room_id, user_id)` — a primary-key
+lookup, no join, invariant 2 satisfied. A guest passes it; a workspace shape reads
+`workspace_memberships` and a guest correctly fails it.
+
+What changes is only the rule that assumed _workspace member ⇒ sees the workspace's rooms_:
+
+```
+rooms you can see = public rooms in workspaces you belong to
+                  ∪ rooms you are explicitly a member of
+```
+
+**The first term needs `and is_private = false`**, which an earlier draft of this line omitted —
+without it every workspace member reads every private room. Written as the two paths the proxy
+actually takes, both primary-key lookups and neither a join:
+
+| Room    | Read check                                      |
+| ------- | ----------------------------------------------- |
+| public  | `workspace_memberships (workspace_id, user_id)` |
+| private | `room_members (room_id, actor_id)`              |
+
+**Workspace roles do not reach into rooms.** There is no admin override into a private room —
+that would put an FGA-shaped question back on the hot path. The one privileged act at room level
+is archiving, which `rooms.created_by` grants: reversible, destroys nothing, needs no role table.
+
+One union, still indexed, still no network call — which is what matters, because **an FGA
+round trip must never sit in the shape proxy's hot path** and room authorisation is exactly
+that path.
+
+**So FGA's real trigger is the relational tail that does not reduce to a row:** per-event
+trace visibility (a trace label naming a repo the viewer cannot access, in a room they can),
+which agents a user may invoke, and cross-workspace sharing. Guests are a query.
 
 ### Deliberately not built
 
 - `projects` table — see below
 - Workspace switching UI — one default workspace, hidden
-- FGA — deferred until guests are real
+- FGA — deferred until the relational tail is real (per-event trace visibility), not until guests are
 - Cross-workspace rooms (Slack's XWS channels) — needs a join table; resist
 - Person-level identity linking
 
@@ -386,8 +514,9 @@ The column is on `rooms` now, nullable, and nothing reads it.
 **The line to hold.** The first request will be _"can I share this project with a client without
 giving them the whole workspace?"_ Saying yes makes projects an FGA resource with a parent
 relation, not a column — a different and much larger piece of work. If that becomes a real
-requirement, the answer is a **guest with room-level grants**, which is the FGA work already
-scheduled by the guest trigger. Do not reach for it by promoting projects.
+requirement, the answer is a **guest with room-level grants** — which needs no FGA: it is an
+org membership with role `guest`, no workspace membership, and `room_members` rows for the
+rooms in question. Do not reach for it by promoting projects.
 
 **Corollary for the UI:** a room's project must never affect who can see it. If a project ever
 looks like it is hiding rooms, that is a bug, not a feature request.
@@ -500,24 +629,22 @@ which is unrecoverable.
 | Durable Objects     | `wrangler dev`            | SQLite storage included                                                                                                                                                                                                     |
 | R2                  | `wrangler dev`            | Emulated                                                                                                                                                                                                                    |
 | **Sandbox**         | Docker via `wrangler dev` | **Egress interception works locally** — a `proxy-everything` sidecar applies TPROXY rules routing container traffic to workerd, explicitly so local mirrors prod. The open-then-lock pattern is testable without deploying. |
-| **WorkOS**          | **`@workos/emulate`**     | See below                                                                                                                                                                                                                   |
+| **WorkOS**          | **Not local**             | See below                                                                                                                                                                                                                   |
 | pi                  | Node library              | Point `pi-ai` at local vLLM or Ollama                                                                                                                                                                                       |
 | Electron / web      | Vite                      |                                                                                                                                                                                                                             |
 
-**`@workos/emulate` is the piece that makes this work.** An open-source local WorkOS API server —
-point any SDK at it via a base-URL override and nothing reaches the live environment. Listens on
-`:4100`, accepts `sk_test_default`, `GET /health` for readiness. Self-contained binaries for macOS,
-Linux and Windows; no Node required.
+**WorkOS is the one dependency that does not run locally.** `@workos/emulate` was adopted
+and then removed. It works — pinned ids, a YAML seed rebuilt on every boot, forced failures —
+but with a real environment as the default it became a second world to keep in sync that
+nobody ran, and it was the sole cause of a whole failure class: its ids were invented, so
+they matched nothing upstream and every mirrored row was a dangling foreign key.
 
-Three properties that matter:
+Instead, point `.env` at **a real WorkOS environment that never serves production traffic**.
+That costs offline dev for auth alone; Postgres, Electric and R2 stay hard-blocked by the
+bootstrap's localhost guard, which is where H1 actually lives.
 
-- **Declarative seed file.** Users, organizations, memberships, RBAC roles and SSO connections seed
-  from YAML, and the emulator **rebuilds that exact world on every boot** — no cross-test state.
-- **Pin IDs to match the real environment.** Both organizations and users accept an optional `id`.
-  Pin them so a database already referencing real org/user IDs lines up, and stays stable across
-  restarts. **Do this from the first seed file** — otherwise local fixtures rot against staging.
-- **Forced failures.** The emulator can fail on command, which is the only practical way to test
-  token refresh and retry logic before production is the first place it meets an expired token.
+**Revisit the emulator when tests need a WorkOS that shares no state between runs.** That is
+a CI problem, and it is the trigger.
 
 **What cannot be local:**
 
@@ -544,7 +671,7 @@ an existing checkout is safe, and any phase can run on its own.
 | ----------- | --------------------------------------------------------------------------------------------- |
 | `env:setup` | Copies each app's `.env.example` into place — **never overwrites an existing file**           |
 | `setup`     | Installs workspace dependencies, builds shared packages                                       |
-| `secrets`   | Generates local secrets that ship as `set-me` placeholders                                    |
+| `secrets`   | Fills every `generate-me` with a random local value; reports every `set-me`                   |
 | `services`  | Asks which features are needed, **checks ports**, starts containers, runs migrations, seeds   |
 | `dev`       | Asks which apps to run, opens them in a multi-pane process TUI (restart any one individually) |
 
@@ -554,8 +681,17 @@ Details worth copying exactly:
   (`bootstrap:raw`, `<APP_ENV>=all pnpm run dev`) so CI never hangs on a question.
 - **Port checks name the process holding a busy port.** Small thing; removes the single most common
   first-run failure.
-- **`set-me` placeholders** make a missing secret fail loudly with an obvious cause rather than a
-  confusing runtime error.
+- **Two placeholder markers, because they mean different things.** `generate-me` is
+  local-only, so a random value is always correct. `set-me` comes from outside — a dashboard,
+  a provider console — and generating a random value for one of those produces a credential
+  that looks set and fails at the first call, which is worse than an obvious placeholder.
+- **The localhost guard belongs here.** `services` refuses to start if any `DATABASE_URL`,
+  `ELECTRIC_*` or `R2_*` value resolves to a non-local host, naming the file and variable.
+  That is invariant 7 made executable, and the only real defence against H1. Auth and provider
+  URLs warn rather than block — a real WorkOS environment is prescribed above, so refusing
+  every non-local URL would forbid a workflow the design calls for.
+- **Verify migrations against the ledger, do not assume `start` ran them.** `supabase start`
+  can restore a cached snapshot and silently skip pending migrations.
 - Xyne also ships a **doctor** command that, in an interactive terminal, can package a redacted
   local failure report. Worth having once the stack is wide enough that "it didn't start" has
   twenty causes.
@@ -580,7 +716,8 @@ is worse than off.
 
 ## Steps
 
-1. npm workspaces skeleton per the tree above. All directories, empty packages.
+1. pnpm workspace skeleton per the tree above, plus `tooling/` for things you run rather
+   than import. Boundary rules (invariants 6 and 9) enforced as lint, each one probed.
 2. `packages/schema` first: `users`, `organizations`, `organization_memberships`, `workspaces`,
    `workspace_memberships`, `rooms`, `room_members`, `messages`, `runs`, `run_events`, `claims`,
    `agents`, `connections`. Types and validators only — no runtime code.
@@ -598,8 +735,8 @@ is worse than off.
 - **Partition `run_events` from day one.** Retrofitting partitioning means rebuilding the Supabase
   instance. Write the cron that creates next month's partition and drops those past retention
   _now_, not when the first partition fills.
-- **Decide the retention window now** — it's a schema property, and changing it later means
-  reprocessing.
+- **Retention is 30 days**, matched by R2 lifecycle rules (H12). It is a schema property;
+  changing it later means reprocessing.
 - **Write the bootstrap before the second developer joins**, not after. It is cheap while there are
   three services and expensive to retrofit at ten.
 - **Pin emulator IDs in the very first seed file.** Retrofitting means every local fixture stops
@@ -616,8 +753,11 @@ is worse than off.
 
 ## Questions to settle
 
-- **Q10:** docs as a route inside marketing, or its own app?
-- What is the `run_events` retention window?
+- ~~**Q10:** docs as a route inside marketing, or its own app?~~ — **RESOLVED**: one app,
+  `apps/site`, with a `/docs` route. Split only if docs need versioning and search badly
+  enough to justify a second deployment.
+- ~~What is the `run_events` retention window?~~ — **RESOLVED: 30 days.** R2 lifecycle rules
+  must expire on the same clock (H12), and both are configured when the bucket is created.
 
 ## Done when
 
@@ -637,6 +777,13 @@ a managed service.**
 
 The sealed cookie is unsealed by the proxy and the write endpoint, yielding
 `{ user_id, organization_id }`. Every authorization decision keys off that pair.
+
+**`unsealSession()` accepts a cookie _or_ a bearer token.** The browser surface is
+same-origin with the API, so the sealed cookie flows with no ceremony. The desktop renderer
+runs on a local origin (`app://`) and is therefore cross-origin to the API — rather than
+fighting `SameSite=None` across a custom protocol, it holds the session in the OS keychain
+and sends it as an `Authorization` header. Same invariant, slightly wider door: one function,
+one parse, both callers.
 
 ### Login is identity-only; the session carries the active org
 
@@ -674,8 +821,10 @@ to the org, our webhook handler adds the default `workspace_membership` on accep
 Room membership checks are simple enough for Postgres, and they sit in the shape proxy's hot path
 where a network call is expensive.
 
-**WorkOS FGA** is worth adopting later for the genuinely relational cases: guest access to specific
-rooms, per-event trace visibility, which agents a user may invoke, cross-workspace sharing. Its
+**WorkOS FGA** is worth adopting later for the genuinely relational cases: per-event trace
+visibility, which agents a user may invoke, cross-workspace sharing. Guest access to specific
+rooms is _not_ among them — it resolves to a union over `room_members` (see Phase 0's role
+model). Its
 model is `resource_type / relation / subject` with inheriting relations, answering both "is user A
 an editor of document X" and "which documents can user A edit".
 
@@ -691,13 +840,16 @@ can authenticate into an MCP server _we publish_. We are the client, not the ser
 1. AuthKit integration in `apps/server`. Sealed cookie handling.
 2. WorkOS webhook handlers mirroring `users`, `organizations`, `organization_memberships`.
 3. **Signup — the single path** (org → org membership `owner` → default workspace → workspace
-   membership `admin` → room "general"). UI says "workspace" throughout; never shows the org level.
+   membership `admin`). UI says "workspace" throughout; never shows the org level. No room —
+   see Phase 0.
 4. Session carries `organization_id` only. Org switcher re-issues the session.
 5. Org roles configured in the WorkOS dashboard: `owner`, `admin`, `member`, `guest`.
 6. Invitation flow via WorkOS `onboard-user`; webhook handler adds the default
    `workspace_membership` on acceptance.
 7. A shared `unsealSession()` helper used by both the shape proxy and the write endpoint.
-8. Client-side account switcher — Electron holds multiple sessions.
+8. Client-side account switcher — Electron holds multiple sessions. **Desktop only**: a
+   browser has one cookie and therefore one session, so switching there is signing out and
+   back in. One email is one account, and the two are never linked server-side.
 
 ## Nuances
 
@@ -706,19 +858,35 @@ can authenticate into an MCP server _we publish_. We are the client, not the ser
 - **Resist putting `workspace_id` in the session** even though there is only one workspace and it
   would be convenient. That convenience is precisely what Slack had to unwind.
 - Mirrored tables are **read-only in application code**. A direct write to `organization_memberships`
-  will be silently overwritten by the next webhook.
+  will be silently overwritten by the next webhook. The one exception is signup, which writes
+  the org rows it just created from the API response rather than waiting for delivery.
+- **The mirror fetches a missing parent rather than failing.** A membership references a user
+  and an org by foreign key and either may be absent — the entity predates the endpoint, its
+  event was dropped, or delivery arrived out of order, all of which at-least-once unordered
+  delivery permits. Without this the insert violates the constraint and WorkOS retries a
+  delivery that can never succeed. Found exactly that way: an organization created before the
+  endpoint existed made every membership event for it fail forever, silently.
+- **Only an `active` membership grants anything.** WorkOS creates the membership the moment an
+  invitation is _sent_, with status `pending`, and flips it to `active` on acceptance — so
+  joining a workspace on membership creation alone hands access to everyone who has merely
+  been emailed. Check `status`, on created and updated both, since acceptance may arrive as
+  either.
 - **Test the SSO-enforced case early** with a WorkOS test org — the same identity entering one
   workspace by password and another by IdP. If that path is broken you won't find out until an
   enterprise trial.
-- `unsealSession()` must be **the only** place the cookie is parsed. Two implementations will drift.
+- `unsealSession()` must be **the only** place a session is parsed — cookie or bearer. Two
+  implementations will drift, and the drift is an authorization bug.
 - **Leave room for Directory Sync.** Enterprises will want membership provisioned from their IdP,
   which changes membership from something users create to something that syncs.
 
 ## Questions to settle
 
-- **Q1:** consumer or B2B first? This determines SSO connection spend and how early Directory Sync
-  and the Admin Portal matter. _Note: the tenancy model no longer depends on this answer — the
-  Slack parallel serves both._
+- **Q1:** consumer or B2B first? _Partly answered: **social login first, enterprise SSO on
+  demand.** Social providers are configured in the AuthKit dashboard and need no code —
+  `/auth/login` asks for `provider: 'authkit'` and the hosted page decides what to show. A
+  social provider is **not** an SSO connection, so early SSO spend is zero and Directory Sync
+  stays deferred. The org-switch fallback for an SSO-enforced org is implemented but untested;
+  it costs nothing to keep and waits for the first customer who demands an IdP._
 - **Q11:** does the Admin Portal cover enough of the org-admin surface to skip building one, or do
   workspace-level admin needs force a custom UI sooner?
 
@@ -746,13 +914,48 @@ query engine.
 - **Rocicorp Zero** — the Replication Manager is a single instance, and every client query is a
   server-maintained materialised view, so cost scales with `clients × queries`. Electric's shape
   logs are plain HTTP so CDNs de-duplicate; benchmarked at 100k–1M concurrent clients on one server.
-- **PowerSync** — rejected on browser grounds (WASM SQLite / OPFS pain). _This rejection is weaker
-  than it was_ — in Electron you'd use native SQLite and that pain disappears. Electric still wins
-  on read-path economics, which is the reason that mattered.
+- **PowerSync** — **rejected on read-path economics, not on browser grounds.** The earlier reason
+  given here (WASM SQLite / OPFS pain) is now simply false: TanStack DB's own browser persistence
+  is wa-sqlite over OPFS, via PowerSync's `@journeyapps` fork. The real reason is architectural and
+  survives: PowerSync holds **a persistent stream per client** and its buckets are **scoped per
+  user, not shared** — so nothing collapses at a CDN, and cost grows with concurrent clients.
+  That is the same curve Zero was rejected for. Their own figure is "tens of thousands of
+  concurrent clients per PowerSync Service instance"; Electric's is 100k–1M on one server.
+  Re-checked 2026-09-06, after Electric Cloud was announced as winding down.
 
 **Trade-offs accepted:** Electric is read-path only (Phase 3 builds the write path); a shape covers
 **one table** so joins happen client-side; Electric's HTTP API is **public by default**, so shapes
 must be defined server-side behind a proxy.
+
+### Self-hosted, because Electric Cloud is winding down
+
+**Decided 2026-09-06.** Electric was [acquired by
+Databricks](https://electric.ax/blog/2026/08/11/electric-joining-databricks) on 11 August 2026 to
+fold sync into Lakebase/Neon, and the announcement is explicit: _"Electric Cloud is winding
+down. Cloud users will need to self-host or move to another provider."_ No public shutdown date.
+
+**What this does not change.** The engine stays Apache 2.0 — Postgres Sync, PGlite, **TanStack DB**
+and Durable Streams are all named as remaining open. And the reason Electric was chosen is a
+property of the _protocol_, not of who hosts it: shape logs are plain HTTP that a CDN
+de-duplicates. Self-hosted Electric still collapses at the CDN, so the economics that beat Zero
+and PowerSync are intact.
+
+**What it does change.** We run a stateful service, which is new — everything else here is
+serverless. Electric caches shape logs on a **persistent filesystem**, prioritises **disk speed
+over memory over CPU**, and needs a **direct** Postgres connection because poolers do not carry
+logical replication. That is squarely what H8 warned about, now applied to the sync engine rather
+than the proxy: it cannot go on Workers.
+
+The shape becomes: client → Worker (shape proxy, auth, cache headers) → Electric (a small
+always-on host with fast disk) → Postgres. The Worker is still where the CDN collapsing happens.
+
+**The one consolation:** the on-disk shape log is _derived_. Lose the volume and Electric rebuilds
+it from Postgres — no backup story needed. Clients take a `must-refetch` and re-sync, which is
+survivable but is exactly the truncate hazard in `docs/plans/local-first.md` D4.
+
+**Neon / Lakebase is not an alternative today.** The acquisition's stated intent is to build sync
+into Lakebase, but nothing is shipping: Lakebase is serverless Postgres with branching and
+autoscaling, with no sync product announced. Worth watching; not worth waiting for.
 
 ### Shapes are room-scoped and time-bounded
 
@@ -794,7 +997,10 @@ equivalent it stays in the tens of dollars at 100k MAU (H8).
 
 ## Steps
 
-1. Electric Cloud project pointed at Supabase. Verify logical replication.
+1. **Electric self-hosted** — `electricsql/electric` with a persistent volume. `DATABASE_URL`
+   must be the **direct** connection, never the pooler. `ELECTRIC_SECRET` is added by the proxy
+   and never reaches a client. Postgres 14+, `wal_level=logical`, a user with `REPLICATION`;
+   Electric creates its publication and slot if privileged. Health at `/v1/health`.
 2. **Set up `pg_replication_slots` lag alerting before anything else** (H1).
 3. Shape proxy in `apps/server/src/shapes/`: unseal session → check membership → proxy to Electric.
 4. Shape definitions in `packages/schema`, **server-side only**.
@@ -807,9 +1013,16 @@ equivalent it stays in the tens of dollars at 100k MAU (H8).
 - **H1 first, genuinely.** An inactive replication slot grows the WAL without bound, and Supabase
   disk grows and never shrinks. This is the hazard most likely to cause an unrecoverable incident.
 - On Electric PAYG there are **no Postgres subqueries in shapes**. Design shapes accordingly or
-  budget for Pro.
-- **Time-bound the shapes from the start.** A shape without a time bound is easy to write and
-  painful to retrofit once clients depend on the history being there.
+  budget for Pro. The room and chat schema needs none — every where clause is row-local equality.
+- **Electric's docs are at `electric.ax`**; the `electric-sql.com` links in this file now redirect.
+- **Time-bound the shapes from the start — but not with a clock.** Electric where clauses
+  **cannot call `now()`** ("cannot use non-deterministic SQL functions like `count()` or
+  `now()`") and there is no `LIMIT`, so neither "the last 7 days" nor "the last 500 messages" is
+  expressible. Baking a literal timestamp in at subscribe time is worse than no bound: every
+  client gets a different shape definition, nothing collapses at the CDN, and the read-path
+  economics that chose Electric evaporate. The bound is a **column** — `conversations.sync_floor`,
+  a message id below which clients do not sync, advanced server-side with hysteresis. See
+  `docs/plans/local-first.md` D3.
 - **Build the subscription registry now**, before there are many rooms. It's the thing you can't add
   later without touching every call site.
 - **Verify a CDN actually sits in front of Electric and is collapsing requests.** The entire cost
@@ -817,7 +1030,9 @@ equivalent it stays in the tens of dollars at 100k MAU (H8).
 
 ## Questions to settle
 
-- **Q2:** Electric Cloud egress IPs / region — needed before locking any Supabase network allowlist.
+- ~~**Q2:** Electric Cloud egress IPs / region.~~ — **MOOT.** Electric Cloud is winding down; we
+  self-host. Replaced by: **where does the Electric container run**, given it is stateful, wants
+  fast local disk, and is the one piece of this stack that cannot live on Cloudflare.
 - **Q3:** does Electric's replication connection count as "activity" for Supabase free-tier pause?
   (Matters for staging cost.)
 
@@ -867,11 +1082,35 @@ Two users chat in a room in real time, and no user action writes to a synced tab
 
 **Goal:** offline cold start renders the room.
 
-> **Revised.** Earlier drafts of this document assumed the persister was ours to write from
-> scratch (est. 2–3 days plus a week of edge cases). That is out of date. TanStack DB now ships
-> `persistedCollectionOptions` over a shared `db-sqlite-persistence-core`, with published adapters
-> for Tauri, Expo, React Native and Cloudflare Durable Objects. **Revised estimate: 1–2 days**,
-> most of it native-module packaging rather than logic.
+> **Revised twice.** Earlier drafts assumed the persister was ours to write from scratch (est.
+> 2–3 days plus a week of edge cases). Verified against the published packages on 2026-09-06, it
+> is richer than the first revision knew — and none of it is in TanStack DB's docs index, so read
+> the packages, not the site.
+>
+> `@tanstack/db-sqlite-persistence-core` (0.2.20) provides `persistedCollectionOptions`, which
+> **wraps** a sync config rather than replacing it and declares a `sync-present` / `sync-absent`
+> mode, so offline cold start is a first-class state. `@tanstack/electron-db-sqlite-persistence`
+> (**0.1.32**) runs `better-sqlite3` in the main process and bridges it to the renderer over IPC;
+> `@tanstack/browser-db-sqlite-persistence` is wa-sqlite over OPFS; `@tanstack/offline-transactions`
+> (1.0.53) is a durable outbox with retry and idempotency keys.
+>
+> **H11 is solved upstream.** `@tanstack/electric-db-collection` persists `{offset, handle,
+shapeId}` and replays it on launch, so a restart resumes the shape log instead of re-reading it.
+> The hazard becomes a regression test rather than a design task.
+>
+> **The caution is version age, not capability.** `@tanstack/db` is 0.8.7 and the Electron bridge
+> 0.1.32 — the youngest dependency under the oldest promise. Pin exact versions and keep the
+> persister behind the `sync/src/local/` interface.
+>
+> **A shape-backed collection is a cache, not storage.** A row leaving a shape arrives as a
+> `delete`, and a `must-refetch` truncates the whole collection — so anything that must outlive a
+> shape change lives in a separate `local-only` collection. That is the window-and-archive split in
+> `docs/plans/local-first.md` D4/D5.
+>
+> **The browser is best-effort**, unlike the desktop: OPFS is evictable, Safari caps
+> script-writable storage at seven days without interaction, and there is no fallback — a missing
+> prerequisite throws rather than degrading. The surface table's "everything except the webview
+> panel" understates that difference.
 
 ## Decisions
 
@@ -919,6 +1158,14 @@ const runEvents = createCollection(
 3. **The adapter is a thin wrapper over a database handle.** Every published adapter is
    `createXSQLitePersistence({ database })` where `database` is that platform's SQLite binding.
    Ours passes `better-sqlite3`.
+
+**`better-sqlite3` runs in the Electron preload, not the renderer.** The renderer reaches it
+through `contextBridge`, so the native module never enters a bundle and remotely-served code
+could never be handed a database handle even in principle.
+
+**Persister selection is a runtime capability check, not a build variant.** `platform.ts`
+asks whether the bridge exposes SQLite; if it does, use it, otherwise `persist-idb`. That is
+what lets `apps/client` produce one artefact that serves both surfaces.
 
 **Existing adapters, for reference when writing ours:**
 
@@ -1086,8 +1333,21 @@ exactly one worker and lets other workers skip past locked rows instead of block
 **Why this and not SQS/Redis:** the run row _is_ the queue entry, so status changes reach the client
 through the shape they already subscribe to. No second system, no sync between them.
 
-Polling every second is fine. `LISTEN`/`NOTIFY` can cut latency later; poll stays the reliable
+Polling every second is fine. **Cloudflare Queues is the wake signal, not the queue** — and
+it is a better fit here than `LISTEN`/`NOTIFY`, which needs a persistent Postgres connection
+that a scale-to-zero Worker or container cannot hold. A queue pushes. Poll stays the reliable
 fallback.
+
+Cost is not the reason for either choice: at 3M runs/month Queues is a rounding error. The
+reason Postgres stays the queue of record is that **the run row _is_ the queue entry** —
+concurrency caps must be enforced atomically at claim time (H5), `awaiting_approval` parks a
+run for human latency a queue cannot express, and priority needs ordering that push-based
+consumers do not give you.
+
+**Consequence worth noting:** the 1s poller was the only thing forcing the broker to be a
+long-running container. Without it, everything the broker does is request/response or
+cron-shaped, so it may be a Worker — which would also make "there is no public execution
+endpoint" a service binding rather than a firewall rule.
 
 **Upgrade path:** River, if this pattern is wanted with retries and scheduling prebuilt. Still
 Postgres, so not a migration.
@@ -1142,8 +1402,18 @@ everyone else, and it is the defence against runaway spawned runs (H5).
 
 ## Decided: agent identity (was Q6)
 
-**An agent is a resource, not a principal.** No agent rows in `users`, no room-scoped agent
-credentials, no second identity system.
+**An agent is a resource, not a principal — but it _is_ addressable.** Amended 2026-09-06: the
+authority half of this stands, the addressability half was too strong.
+
+Agents and people are the same construct wherever the product points at somebody — member list,
+message author, mention, "who opened this panel". That is the `actors` table (Phase 0): one row
+per addressable thing in an org, `kind` discriminating, pointing at a `users` row or an `agents`
+row. An agent joins a room with a `room_members` row exactly as a person does, and that row is
+what makes it invokable there.
+
+Still **no agent rows in `users`** — that is a WorkOS mirror with `email not null unique`, and
+writing to it breaks invariant 4. And still no second identity system: an actor is never the
+subject of a read check. The shape proxy only ever authorises humans.
 
 The agent service authenticates to the write endpoint **as a service**. Each write is authorised by
 the `runs` row it references — which already carries `invoked_by`, `workspace_id` and
@@ -1752,11 +2022,32 @@ mature; Tauri's multi-webview support is newer.
 _Accepted costs:_ ~100MB+ bundles, signing and notarisation, auto-update infrastructure, and prompt
 Electron security patching because we ship a browser.
 
-### The agent emits only a URL
+### The agent emits only a URL — and a room holds several
 
-What syncs is tiny: `{room_id, url, opened_by, at}`. No content sync, no caching, no staleness
-questions, no SSRF surface, no fetch cost, no tokens to manage. Each user logs in with their own
-session.
+What syncs is tiny: a `panels` row. No content sync, no caching, no staleness questions, no SSRF
+surface, no fetch cost, no tokens to manage. Each user logs in with their own session.
+
+**Generalised in Phase 0** from `{room_id, url, opened_by, at}` to `kind` plus a `config` jsonb —
+`browser` and `chat` today, `sandbox`, `terminal` and a native doc when they are wanted, without a
+migration each time. `created_by` is an `actor_id`, which is what makes "an agent opened a panel"
+and "a person opened a panel" the same row. A chat panel also carries a `conversation_id` and
+mirrors that conversation's visibility, because the panels shape filters on visibility and the
+proxy cannot join to find it.
+
+**A room holds multiple panels, arranged like editor panes.** Earlier drafts had one URL per
+room; that was too small. `<webview>` is the right primitive for this and beats
+`WebContentsView`: it is a DOM element, so CSS grid, flex and a resizable-panel library all
+work, whereas `WebContentsView` is positioned by the main process in absolute pixels and
+turns every splitter drag into IPC.
+
+**What is open is shared; how it is arranged is local.** Which panels a room has syncs — that
+is the product. Pane sizes, split direction and focus do not: they are per user, per device,
+and live in `packages/sync/src/local/` with real migrations. This is the same call as the
+already-declined shared scroll position and shared highlighting, for the same reason.
+
+**Each `<webview>` is a full renderer process**, and a heavy page is 150–300MB of it. A cap
+on live panels plus unloading inactive ones — keeping URL and scroll intent so reopening is
+cheap — is cheap to design now and invasive once panes are everywhere.
 
 Server-side fetch-and-render was considered first, to dodge `X-Frame-Options`/CSP blocking that
 defeats naive iframes. Electron makes it unnecessary — **this retroactively justifies Electron over
@@ -1770,9 +2061,15 @@ click to join, so layouts don't yank sideways mid-typing.
 
 ### Webview hardening — required, not optional
 
-- Dedicated `partition` so agent-opened pages can't touch app cookies/storage
+- **One shared agent `partition`**, not one per panel, so agent-opened pages can't touch app
+  storage while a provider login still happens _once ever_ rather than once per pane
 - `nodeIntegration` off, `contextIsolation` on
-- `<webview>` over `BrowserView` (out-of-process)
+- `<webview>` over `WebContentsView` (see above)
+- **Harden centrally in `will-attach-webview`**, not per element. With N panels created from
+  JSX, per-element attributes are a discipline problem — someone eventually writes one without
+  a partition. That event lets the main process strip preload scripts, force the webPreferences,
+  and `preventDefault()` any URL failing the allowlist, once, for every webview that will ever
+  exist. It is what makes H10 enforceable at ten panes instead of one
 - Allowlist navigation via `will-navigate` and `setWindowOpenHandler`
 - **Block `file://`, non-http schemes, localhost and internal IPs** (H10) — the desktop app sits
   inside the user's network, so an internal URL is a genuine pivot
@@ -1851,8 +2148,40 @@ visible.
 
 ## Decisions
 
-`electron-updater` with a static feed. The app checks on launch and periodically, downloads in the
-background, and applies on next restart.
+### Two update channels, at their natural frequencies
+
+**Decided.** The renderer is a bundle the shell loads from local disk, and it updates
+independently of the shell.
+
+|               | Ships                             | Signed?                       | Cadence                              |
+| ------------- | --------------------------------- | ----------------------------- | ------------------------------------ |
+| **UI bundle** | zip → R2 → shell polls a manifest | No — it is data, not a binary | Every deploy                         |
+| **Shell**     | `electron-updater`, static feed   | Yes, and notarised            | Only when native capabilities change |
+
+This is the only arrangement that satisfies all three of: embedded webviews, fast UI updates,
+and local-first. A thin client loading a hosted URL gives the first two but makes the renderer
+a remote origin — which forecloses SQLite, since a compromised deploy would then be handed a
+native database handle. A purely bundled renderer gives the first and third but puts a CSS fix
+behind a build, a signature, notarisation, a poll interval and a user restart.
+
+**The cost is version skew.** A downloaded UI calls preload APIs the shipped shell provides,
+so UI v20 needing a bridge method shell v10 lacks is a white screen. Bound it three ways: the
+bundle manifest declares `minShellVersion` and the updater **refuses** what it cannot run; the
+shell exposes one `bridgeVersion`, bumped only on breaking preload changes; and a bundle that
+fails to boot **falls back to the packaged renderer**. A bad UI bundle must never brick the app.
+
+**A property `electron-updater` cannot offer: instant rollback.** Shell updates are
+roll-forward only — clients that already updated stay updated. A UI bundle is not: republish
+the manifest pointing at the previous version and the fleet reverts on next poll. That matters
+most for the thing that changes most often.
+
+_Reference: `apps/electron/src/services/ui-updater.ts` in `juspay/xyne-spaces`, which ships
+this in production._
+
+### Shell updates
+
+`electron-updater` with a static feed. The app checks on launch and periodically, downloads in
+the background, and applies on next restart.
 
 **Signing is mandatory, not optional.** macOS requires signing and notarisation or Gatekeeper
 rejects the update — updates specifically validate the signature. Windows needs a code-signing
@@ -1891,11 +2220,18 @@ A signed update ships to a staged cohort and applies cleanly with a schema chang
 
 ## Decisions
 
-Electric being transport- and storage-agnostic is what makes this cheap: the same sync layer serves
-both surfaces, and everything above the persister is identical.
+**The browser surface is the same artefact, not a second client.** `apps/client` builds once;
+that output is deployed as the website and zipped into the desktop UI bundle. What differs is
+resolved at runtime through `platform.ts` — the persister (IndexedDB rather than SQLite) and
+the panel (unavailable). There is no separate web client to keep in step.
 
-**What the browser loses is the webview panel**, and that's unavoidable — iframes get blocked by
-most of the sites we care about. That's one feature degrading, not the product failing.
+Electric being transport- and storage-agnostic is what makes this cheap: the same sync layer
+serves both surfaces, and everything above the persister is identical.
+
+**What the browser loses is the webview panel** — now the whole multi-pane workspace, not a
+single frame — and that's unavoidable: iframes get blocked by most of the sites we care about.
+That sharpens the desktop/browser distinction rather than weakening it, but the missing state
+has more to explain than it used to.
 
 **Positioning:** browser = join a room, read the trace, invoke an agent. Desktop = full, with shared
 document preview. A legible product distinction, not a compromise to apologise for.
@@ -1931,29 +2267,32 @@ document preview. A legible product distinction, not a compromise to apologise f
 | Q7      | Webview navigate-away behaviour                                                                              | 10               |
 | Q8      | Team/service-account agent mode as an explicit second mode                                                   | 7 or post-launch |
 | Q9      | Per-event trace visibility for guests                                                                        | 9                |
-| Q10     | Docs as a route in marketing, or its own app                                                                 | 0                |
+| ~~Q10~~ | ~~Docs as a route in marketing, or its own app~~ — **RESOLVED**: one app, `apps/site`                        | —                |
 | Q13     | Does active-CPU billing hold up under checkout-heavy workloads?                                              | 8                |
 
 ---
 
 # Appendix B — Deferred, With Reasons
 
-| Item                                          | Why deferred                                                                                                                                                                                                | Revisit when                                                                                                                                                              |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| PowerSync / Zero                              | Read-path economics favour Electric; Electron weakens but doesn't overturn the case. Weakened further now that TanStack DB ships first-class SQLite persistence — the main thing PowerSync offered for free | Unlikely to revisit                                                                                                                                                       |
-| DeepSeek Harness / Cordis                     | rc.5 preview; our design is shaped around pi's event and package model                                                                                                                                      | If pi stalls, or Cordis's sandbox/storage interfaces prove worth copying                                                                                                  |
-| Cordis on the frontend                        | React already provides both composability properties                                                                                                                                                        | Never — the pattern is borrowed for subscriptions only                                                                                                                    |
-| `pi-subagents` extension                      | Runs-spawning-runs gives the same isolation with visible traces                                                                                                                                             | If mid-turn delegation without a room entry becomes necessary                                                                                                             |
-| WorkOS FGA                                    | Workspace roles live in a `role` column at launch; FGA replaces the evaluation, not the storage                                                                                                             | **Guests.** A guest in one room but not the workspace breaks a simple membership check — that is the trigger                                                              |
-| WorkOS MCP Auth                               | We're the MCP client, not the server                                                                                                                                                                        | If we expose the workspace as an MCP server                                                                                                                               |
-| WorkOS Directory Sync / Admin Portal          | Sales-driven                                                                                                                                                                                                | First enterprise deal                                                                                                                                                     |
-| Typesense / Meilisearch / Quickwit / pgvector | SQLite FTS5 locally + Postgres FTS server-side covers v1                                                                                                                                                    | When ranking quality is the complaint, or semantic search over Notion is wanted                                                                                           |
-| Chrome cookie import                          | macOS-only, security-hostile, architecturally unnecessary                                                                                                                                                   | Never                                                                                                                                                                     |
-| Self-hosted Kata/Firecracker                  | Dedicated node pool, KVM blocked on GKE COS — real ops weight                                                                                                                                               | Above ~50 concurrent sandboxes, or if per-kernel isolation becomes contractual                                                                                            |
-| E2B / Daytona / Northflank                    | Cloudflare wins on active-CPU billing + platform fit; E2B carries a ~₹13,000/mo floor                                                                                                                       | If micro-VM isolation is contractually required (→ E2B)                                                                                                                   |
-| Cloudflare Stream                             | R2 + MP4 + range requests covers 1–3 min agent clips                                                                                                                                                        | Long video, adaptive bitrate, or many concurrent viewers                                                                                                                  |
-| Kernel / Browserbase                          | Local Electron CDP path is free and covers the interactive case; Browser Use Cloud (~₹5.3/browser-hr) covers background                                                                                     | If bot detection blocks the simpler paths. _Kernel per-hour pricing unverified — get a quote. Note their browser pools count toward concurrency whether acquired or not._ |
-| Durable Streams for traces                    | Postgres Sync gives one data path and free offline scrollback                                                                                                                                               | If sub-100ms label latency becomes a requirement                                                                                                                          |
+| Item                                          | Why deferred                                                                                                                                                                                                              | Revisit when                                                                                                                                                              |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PowerSync / Zero                              | Read-path economics favour Electric; Electron weakens but doesn't overturn the case. Weakened further now that TanStack DB ships first-class SQLite persistence — the main thing PowerSync offered for free               | Unlikely to revisit                                                                                                                                                       |
+| DeepSeek Harness / Cordis                     | rc.5 preview; our design is shaped around pi's event and package model                                                                                                                                                    | If pi stalls, or Cordis's sandbox/storage interfaces prove worth copying                                                                                                  |
+| Cordis on the frontend                        | React already provides both composability properties                                                                                                                                                                      | Never — the pattern is borrowed for subscriptions only                                                                                                                    |
+| `pi-subagents` extension                      | Runs-spawning-runs gives the same isolation with visible traces                                                                                                                                                           | If mid-turn delegation without a room entry becomes necessary                                                                                                             |
+| WorkOS FGA                                    | Workspace roles live in a `role` column at launch; FGA replaces the evaluation, not the storage                                                                                                                           | **Per-event trace visibility**, not guests — guests resolve to a union over `room_members` (see Phase 0's role model)                                                     |
+| WorkOS MCP Auth                               | We're the MCP client, not the server                                                                                                                                                                                      | If we expose the workspace as an MCP server                                                                                                                               |
+| WorkOS Directory Sync / Admin Portal          | Sales-driven                                                                                                                                                                                                              | First enterprise deal                                                                                                                                                     |
+| Typesense / Meilisearch / Quickwit / pgvector | SQLite FTS5 locally + Postgres FTS server-side covers v1                                                                                                                                                                  | When ranking quality is the complaint, or semantic search over Notion is wanted                                                                                           |
+| WorkOS local emulator (`@workos/emulate`)     | Adopted, then removed. With a real environment as the default it was a second world to keep in sync that nobody ran, and its invented ids made every mirrored row a dangling foreign key                                  | **CI.** When tests need a WorkOS that shares no state between runs                                                                                                        |
+| `packages/ui` as a shared package             | Existed to share components between a web app and an Electron renderer. There is one renderer now, loading a local bundle of the same build, so the package had a single consumer                                         | If a third surface appears that cannot use the same build                                                                                                                 |
+| Thin client (renderer loads a hosted URL)     | Fast UI updates, but the renderer becomes a remote origin — which forecloses SQLite, since a compromised deploy would hold a native database handle. The bundle-poll channel in Phase 11 gets the same speed without that | If local-first is ever abandoned                                                                                                                                          |
+| Chrome cookie import                          | macOS-only, security-hostile, architecturally unnecessary                                                                                                                                                                 | Never                                                                                                                                                                     |
+| Self-hosted Kata/Firecracker                  | Dedicated node pool, KVM blocked on GKE COS — real ops weight                                                                                                                                                             | Above ~50 concurrent sandboxes, or if per-kernel isolation becomes contractual                                                                                            |
+| E2B / Daytona / Northflank                    | Cloudflare wins on active-CPU billing + platform fit; E2B carries a ~₹13,000/mo floor                                                                                                                                     | If micro-VM isolation is contractually required (→ E2B)                                                                                                                   |
+| Cloudflare Stream                             | R2 + MP4 + range requests covers 1–3 min agent clips                                                                                                                                                                      | Long video, adaptive bitrate, or many concurrent viewers                                                                                                                  |
+| Kernel / Browserbase                          | Local Electron CDP path is free and covers the interactive case; Browser Use Cloud (~₹5.3/browser-hr) covers background                                                                                                   | If bot detection blocks the simpler paths. _Kernel per-hour pricing unverified — get a quote. Note their browser pools count toward concurrency whether acquired or not._ |
+| Durable Streams for traces                    | Postgres Sync gives one data path and free offline scrollback                                                                                                                                                             | If sub-100ms label latency becomes a requirement                                                                                                                          |
 
 ---
 

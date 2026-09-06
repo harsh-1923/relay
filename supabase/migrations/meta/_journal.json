@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1788586023539,
+      "tag": "20260905052703_tenancy",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788705655674,
+      "tag": "20260906144055_uuidv7",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788705821547,
+      "tag": "20260906144341_rooms",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788706522018,
+      "tag": "20260906145522_actor_tombstones",
+      "breakpoints": true
+    }
+  ]
+}

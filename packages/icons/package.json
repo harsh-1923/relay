@@ -1,0 +1,24 @@
+{
+  "name": "@relay/icons",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "//": "Every icon module is one createIcon() call at module scope. Without this the bundler cannot prove that is side-effect free and ships all ~980.",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:icons": "node scripts/build-icons.mjs"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@relay/tsconfig": "workspace:*",
+    "@types/react": "^19.2.18",
+    "react": "^19.2.8"
+  }
+}

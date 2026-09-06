@@ -1,3 +1,16 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+  - 'packages/connectors/*'
+  - 'tooling/*'
+
+# drizzle-orm's optional driver peers otherwise produce several variant paths, and a package
+# that exports Drizzle tables must be compiled against the same instance as the app querying
+# with them — two copies are a type mismatch on every column.
+dedupePeerDependents: true
+
+# Build scripts are opt-in.
+onlyBuiltDependencies:
+  - electron
+  - esbuild
+  - workerd

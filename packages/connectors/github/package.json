@@ -1,0 +1,30 @@
+{
+  "name": "@relay/connector-github",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "exports": {
+    "./manifest": "./src/manifest.ts",
+    "./execute": "./src/execute.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@relay/tsconfig": "workspace:*"
+  }
+}

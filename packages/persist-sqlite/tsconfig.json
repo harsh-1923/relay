@@ -1,0 +1,5 @@
+{
+  "extends": "@relay/tsconfig/node.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["src", "test"]
+}

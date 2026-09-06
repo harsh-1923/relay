@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>relay</title>
+    <!--
+      The preset drives dark mode from a `.dark` class, not prefers-color-scheme, so
+      something has to set it. Doing it here rather than in React means it lands before
+      first paint — in a bundle this size the flash of the wrong theme is otherwise visible.
+    -->
+    <script>
+      (() => {
+        const media = matchMedia('(prefers-color-scheme: dark)');
+        const apply = () => document.documentElement.classList.toggle('dark', media.matches);
+        apply();
+        media.addEventListener('change', apply);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

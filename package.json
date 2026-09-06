@@ -10,15 +10,26 @@
     "node": ">=22"
   },
   "scripts": {
+    "up": "node tooling/bootstrap/src/index.mjs",
+    "up:reconfigure": "node tooling/bootstrap/src/index.mjs --reconfigure",
+    "health": "node tooling/bootstrap/src/doctor.mjs",
+    "diagrams": "node tooling/diagrams/build.mjs",
+    "predev": "node tooling/bootstrap/src/ports.mjs",
+    "dev": "pnpm --parallel --filter @relay/server --filter @relay/client --filter @relay/desktop dev",
+    "predev:web": "node tooling/bootstrap/src/ports.mjs",
+    "dev:web": "pnpm --parallel --filter @relay/server --filter @relay/client dev",
+    "dev:shell": "pnpm --filter @relay/desktop dev",
+    "tunnel": "node tooling/bootstrap/src/tunnel.mjs",
+    "services:stop": "supabase stop",
+    "db:reset": "supabase db reset",
     "build": "pnpm -r --if-present build",
-    "dev": "pnpm -r --parallel --if-present dev",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "clean": "pnpm -r exec rm -rf dist node_modules && rm -rf node_modules",
+    "clean": "pnpm -r exec rm -rf dist node_modules && find . -name \"*.tsbuildinfo\" -not -path \"*/node_modules/*\" -delete && rm -rf node_modules",
     "prepare": "husky"
   },
   "devDependencies": {
@@ -26,10 +37,12 @@
     "@commitlint/config-conventional": "^21.2.2",
     "@relay/eslint-config": "workspace:*",
     "@relay/tsconfig": "workspace:*",
+    "@tldraw/tlschema": "^5.4.0",
     "eslint": "^10.9.1",
     "husky": "^9.1.7",
     "lint-staged": "^17.4.1",
     "prettier": "^3.9.6",
+    "supabase": "^2.116.0",
     "typescript": "^6.0.3"
   }
 }
