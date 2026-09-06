@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
+  actors,
   organizationMemberships,
   organizations,
   users,
@@ -45,6 +46,7 @@ const cleanup = async () => {
   await d.delete(organizationMemberships).where(eq(organizationMemberships.userId, OWNER));
   await d.delete(organizations).where(eq(organizations.id, ORG2));
   await d.delete(workspaces).where(eq(workspaces.organizationId, ORG));
+  for (const org of [ORG, ORG2]) await d.delete(actors).where(eq(actors.organizationId, org));
   await d.delete(users).where(eq(users.id, OWNER));
   await d.delete(users).where(eq(users.id, INVITEE));
   await d.delete(users).where(eq(users.id, 'user_01TEST0000000000000GUEST'));

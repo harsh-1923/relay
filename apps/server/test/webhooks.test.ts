@@ -1,7 +1,13 @@
 import { eq } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { organizationMemberships, organizations, users } from '@relay/schema';
+import {
+  actors,
+  organizationMemberships,
+  organizations,
+  users,
+  workspaceMemberships,
+} from '@relay/schema';
 
 import { db } from '../src/db';
 import { applyEvent, type Env } from '../src/webhooks/workos';
@@ -28,7 +34,10 @@ const MEMBERSHIP = 'om_01TEST000000000000000000000';
 
 const d = db(env);
 const cleanup = async () => {
+  await d.delete(workspaceMemberships).where(eq(workspaceMemberships.organizationId, ORG));
   await d.delete(organizationMemberships).where(eq(organizationMemberships.id, MEMBERSHIP));
+  // An active membership now brings an actor with it, and an actor outlives its user.
+  await d.delete(actors).where(eq(actors.organizationId, ORG));
   await d.delete(users).where(eq(users.id, USER));
   await d.delete(organizations).where(eq(organizations.id, ORG));
 };
@@ -98,5 +107,107 @@ describe('workos webhook → postgres mirror', () => {
 
   it('ignores events it does not handle', async () => {
     await expect(applyEvent({ event: 'session.created', data: {} }, env)).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * `actors.display_name` is a projection of the mirror, so the only writer is the handler that
+ * maintains the mirror itself. These cover that it fans out, that a guest gets one, and that
+ * the row survives everything the person's account can do — because `messages.author_id` is
+ * `restrict`, and because a webhook a foreign key refuses is retried forever.
+ */
+describe('workos webhook → actors', () => {
+  // Unlike the block above, these do not build on each other — each seeds what it needs.
+  beforeEach(cleanup);
+
+  const seed = async (role = 'member') => {
+    await applyEvent(
+      { event: 'user.created', data: { id: USER, email: 'probe@relay.test', firstName: 'Probe' } },
+      env,
+    );
+    await applyEvent({ event: 'organization.created', data: { id: ORG, name: 'Probe Org' } }, env);
+    await applyEvent(
+      {
+        event: 'organization_membership.created',
+        data: {
+          id: MEMBERSHIP,
+          userId: USER,
+          organizationId: ORG,
+          status: 'active',
+          role: { slug: role },
+        },
+      },
+      env,
+    );
+  };
+
+  it('creates one when a membership becomes active', async () => {
+    await seed();
+    const [a] = await d.select().from(actors).where(eq(actors.organizationId, ORG));
+    expect(a?.kind).toBe('human');
+    expect(a?.userId).toBe(USER);
+    expect(a?.displayName).toBe('Probe');
+  });
+
+  it('creates one for a guest too — addressable without a workspace', async () => {
+    await seed('guest');
+    const [a] = await d.select().from(actors).where(eq(actors.organizationId, ORG));
+    expect(a?.userId).toBe(USER);
+    const ws = await d
+      .select()
+      .from(workspaceMemberships)
+      .where(eq(workspaceMemberships.userId, USER));
+    expect(ws).toHaveLength(0);
+  });
+
+  it('does not create one for a merely invited person', async () => {
+    await applyEvent({ event: 'user.created', data: { id: USER, email: 'probe@relay.test' } }, env);
+    await applyEvent({ event: 'organization.created', data: { id: ORG, name: 'Probe Org' } }, env);
+    await applyEvent(
+      {
+        event: 'organization_membership.created',
+        data: { id: MEMBERSHIP, userId: USER, organizationId: ORG, status: 'pending' },
+      },
+      env,
+    );
+    expect(await d.select().from(actors).where(eq(actors.organizationId, ORG))).toHaveLength(0);
+  });
+
+  it('carries a rename out to the projection', async () => {
+    await seed();
+    await applyEvent(
+      {
+        event: 'user.updated',
+        data: { id: USER, email: 'probe@relay.test', firstName: 'Renamed', lastName: 'Person' },
+      },
+      env,
+    );
+    const [a] = await d.select().from(actors).where(eq(actors.organizationId, ORG));
+    expect(a?.displayName).toBe('Renamed Person');
+  });
+
+  it('leaves a tombstone when the user is deleted, rather than refusing the delivery', async () => {
+    await seed();
+    await expect(
+      applyEvent({ event: 'user.deleted', data: { id: USER } }, env),
+    ).resolves.toBeUndefined();
+
+    expect(await d.select().from(users).where(eq(users.id, USER))).toHaveLength(0);
+    const [a] = await d.select().from(actors).where(eq(actors.organizationId, ORG));
+    expect(a?.userId).toBeNull();
+    expect(a?.kind).toBe('human');
+    expect(a?.displayName).toBe('Probe'); // still renders on whatever they wrote
+  });
+
+  it('revokes grants when a membership is deleted, and keeps the actor', async () => {
+    await seed();
+    const [a] = await d.select().from(actors).where(eq(actors.organizationId, ORG));
+    await applyEvent({ event: 'organization_membership.deleted', data: { id: MEMBERSHIP } }, env);
+
+    expect(
+      await d.select().from(workspaceMemberships).where(eq(workspaceMemberships.userId, USER)),
+    ).toHaveLength(0);
+    const [still] = await d.select().from(actors).where(eq(actors.id, a!.id));
+    expect(still?.id).toBe(a!.id);
   });
 });

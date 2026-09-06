@@ -1,3 +1,4 @@
+import { ensureActor, syncActorProfile } from '../actors';
 import { workos, type Env as AuthEnv } from '../auth/session';
 import { db, type DbEnv } from '../db';
 import {
@@ -11,9 +12,9 @@ import {
   type MirrorOrganization,
   type MirrorUser,
 } from '../mirror';
-import { joinDefaultWorkspace } from '../tenancy';
+import { joinDefaultWorkspace, revokeRoomGrants } from '../tenancy';
 import { eq } from 'drizzle-orm';
-import { organizations, users } from '@relay/schema';
+import { organizationMemberships, organizations, users } from '@relay/schema';
 
 export type Env = AuthEnv & DbEnv & { WORKOS_WEBHOOK_SECRET: string };
 
@@ -103,12 +104,40 @@ export async function applyEvent(event: WorkosEvent, env: Env): Promise<void> {
 
   switch (event.event) {
     case 'user.created':
-    case 'user.updated':
-      return applyUser(d, event.data as unknown as MirrorUser);
-
-    case 'user.deleted':
-      await deleteUser(d, (event.data as { id: string }).id);
+    case 'user.updated': {
+      const u = event.data as unknown as MirrorUser;
+      await applyUser(d, u);
+      /**
+       * `actors.display_name` is a projection of this mirror row, so it is maintained by the
+       * mirror's own writer and by nothing else. A rename in WorkOS fans out to every
+       * organization the person belongs to — one actor row each.
+       */
+      await syncActorProfile(d, u);
       return;
+    }
+
+    case 'user.deleted': {
+      const id = (event.data as { id: string }).id;
+      /**
+       * Clear what hangs off the user before removing it. `organization_memberships.user_id`
+       * is `restrict`, so a user who still has one cannot be deleted — and delivery is
+       * unordered and at-least-once, so "the membership event comes first" is an assumption
+       * WorkOS does not owe us. Without this the delete throws, we answer non-200, and WorkOS
+       * retries a delivery that can never succeed. Same failure the membership handler's
+       * `ensureParents` exists to prevent, from the other direction.
+       *
+       * The actor is not deleted, only its `user_id` cleared by the foreign key — a tombstone
+       * that keeps a departed person's name on the messages they wrote.
+       */
+      const memberships = await d
+        .select({ organizationId: organizationMemberships.organizationId })
+        .from(organizationMemberships)
+        .where(eq(organizationMemberships.userId, id));
+      for (const m of memberships) await revokeRoomGrants(d, id, m.organizationId);
+      await d.delete(organizationMemberships).where(eq(organizationMemberships.userId, id));
+      await deleteUser(d, id);
+      return;
+    }
 
     case 'organization.created':
     case 'organization.updated':
@@ -146,15 +175,42 @@ export async function applyEvent(event: WorkosEvent, env: Env): Promise<void> {
        * Checked on both created and updated, because acceptance may arrive as either.
        */
       if (m.status === 'active') {
+        /**
+         * The actor comes before the workspace membership and applies to guests too — a
+         * guest is addressable, appears in a member list and authors messages exactly like
+         * anyone else. What a guest does not get is the workspace membership below.
+         */
+        await ensureActor(d, { userId: m.userId, organizationId: m.organizationId });
+
         const role = m.role?.slug ?? 'member';
         if (role !== 'guest') await joinDefaultWorkspace(d, m.userId, m.organizationId);
       }
       return;
     }
 
-    case 'organization_membership.deleted':
-      await deleteMembership(d, (event.data as { id: string }).id);
+    case 'organization_membership.deleted': {
+      const id = (event.data as { id: string }).id;
+      /**
+       * Read the membership before deleting it, because room and workspace grants are keyed
+       * by the user and organization it names and there is no other way back to them.
+       *
+       * The **actor row stays**. Their messages reference it, and a departed colleague's name
+       * should still render on what they wrote — deleting it would either fail against
+       * `messages.author_id` or erase authorship. What goes is every grant: someone removed
+       * from the organization keeps no room membership behind them.
+       */
+      const [m] = await d
+        .select({
+          userId: organizationMemberships.userId,
+          organizationId: organizationMemberships.organizationId,
+        })
+        .from(organizationMemberships)
+        .where(eq(organizationMemberships.id, id))
+        .limit(1);
+      if (m) await revokeRoomGrants(d, m.userId, m.organizationId);
+      await deleteMembership(d, id);
       return;
+    }
 
     default:
       return;

@@ -3,8 +3,11 @@ import type { PgTransaction } from 'drizzle-orm/pg-core';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 
 import {
+  actors,
+  conversationMembers,
   organizationMemberships,
   organizations,
+  roomMembers,
   workspaceMemberships,
   workspaces,
 } from '@relay/schema';
@@ -217,6 +220,55 @@ export async function switchTargets(d: Db, userId: string): Promise<SwitchTarget
     isDefault: r.isDefault,
     roles: r.roles,
   }));
+}
+
+/**
+ * Everything a departing member was granted, in one organization.
+ *
+ * Called when an organization membership is deleted. Their session dies with the membership,
+ * so this is not what stops them reading — it is what stops the grants outliving the person,
+ * which matters the day they are invited back and silently find themselves in rooms nobody
+ * remembers adding them to.
+ *
+ * **The actor row is deliberately left behind.** Their messages reference it, and a departed
+ * colleague's name should still render on what they wrote; deleting it would either fail
+ * against `messages.author_id` or erase authorship. An actor with no memberships is inert.
+ */
+export async function revokeRoomGrants(
+  d: Db,
+  userId: string,
+  organizationId: string,
+): Promise<void> {
+  const [actor] = await d
+    .select({ id: actors.id })
+    .from(actors)
+    .where(and(eq(actors.organizationId, organizationId), eq(actors.userId, userId)))
+    .limit(1);
+
+  if (actor) {
+    await d
+      .delete(roomMembers)
+      .where(
+        and(eq(roomMembers.actorId, actor.id), eq(roomMembers.organizationId, organizationId)),
+      );
+    await d
+      .delete(conversationMembers)
+      .where(
+        and(
+          eq(conversationMembers.actorId, actor.id),
+          eq(conversationMembers.organizationId, organizationId),
+        ),
+      );
+  }
+
+  await d
+    .delete(workspaceMemberships)
+    .where(
+      and(
+        eq(workspaceMemberships.userId, userId),
+        eq(workspaceMemberships.organizationId, organizationId),
+      ),
+    );
 }
 
 /** Whether the user actually belongs to the org they are asking to switch into. */

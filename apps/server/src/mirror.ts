@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import type { PgTransaction } from 'drizzle-orm/pg-core';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 
 import { organizationMemberships, organizations, users } from '@relay/schema';
@@ -37,7 +38,8 @@ export interface MirrorMembership {
   role?: { slug?: string };
 }
 
-type Db = PostgresJsDatabase<Record<string, unknown>>;
+/** A connection or a transaction — signup mirrors inside the lock it is already holding. */
+type Db = PostgresJsDatabase<Record<string, unknown>> | PgTransaction<never, never, never>;
 
 export async function applyUser(d: Db, u: MirrorUser): Promise<void> {
   const row = {

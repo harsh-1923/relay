@@ -1,7 +1,10 @@
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 
+import { users } from '@relay/schema';
+
+import { ensureActor } from '../actors';
 import { db, type DbEnv } from '../db';
-import { applyMembership, applyOrganization } from '../mirror';
+import { applyMembership, applyOrganization, applyUser } from '../mirror';
 import { createDefaultWorkspace, defaultWorkspace } from '../tenancy';
 import { workos, type Env as AuthEnv } from './session';
 
@@ -16,8 +19,13 @@ export type Env = AuthEnv & DbEnv;
  * Slack hides the org level until Enterprise Grid; so do we. Both rows always exist, so the
  * level can be revealed later without a migration.
  *
- * No room. The doc's sketch ends with one called "general"; the room schema is still moving,
- * and adding an insert here later is cheaper than guessing it now.
+ * The actor rides along with the org membership. Without one the account is real and cannot
+ * be added to any room, and there is no UI that would repair it (R6) — so it is written
+ * inside the same transaction as the membership it belongs to, never after.
+ *
+ * Still no room. The doc's sketch ends with one called "general"; nothing yet decides which
+ * room a new organization should have, and adding an insert here later is cheaper than
+ * guessing it now.
  */
 export async function createOrganizationForUser(
   env: Env,
@@ -42,10 +50,24 @@ export async function createOrganizationForUser(
   return d.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`signup:${userId}`}))`);
 
+    /**
+     * The signing-in user is mirrored by `user.created`, which is a webhook — so locally,
+     * without a tunnel, it never arrives, and every foreign key below it fails. Fetch and
+     * mirror on demand instead, the same way the webhook repairs a missing parent. One extra
+     * call on a path that runs once per person, and it is what lets signup work offline.
+     */
+    const [mirrored] = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (!mirrored) await applyUser(tx, await um.getUser(userId));
+
     // Whoever held the lock first may already have done this.
     const existing = await um.listOrganizationMemberships({ userId, limit: 1 });
     const already = existing.data[0];
     if (already) {
+      await ensureActor(tx, { userId, organizationId: already.organizationId });
       const workspace = await defaultWorkspace(tx, already.organizationId);
       if (workspace) {
         const organization = await workos(env).organizations.getOrganization(
@@ -88,6 +110,7 @@ export async function createOrganizationForUser(
       // applies if `owner` does not exist, and the mirror should say which.
       role: { slug: membership.role?.slug ?? 'owner' },
     });
+    await ensureActor(tx, { userId, organizationId: organization.id });
 
     return {
       organization,
