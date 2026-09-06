@@ -21,6 +21,8 @@ import { CreateWorkspace } from '@/routes/create-workspace';
 import { Settings } from '@/routes/settings';
 import { SignIn } from '@/routes/sign-in';
 import { Switcher } from '@/routes/switcher';
+import { SyncProvider } from '@/lib/sync';
+import { Room } from '@/routes/room';
 import { Workspace } from '@/routes/workspace';
 import './styles.css';
 
@@ -173,6 +175,7 @@ function App({ api }: { api: SessionApi }) {
           />
         }
       />
+      <Route path={patterns.room} element={<Room />} />
       <Route
         path={patterns.settings}
         element={
@@ -359,11 +362,16 @@ function Shell() {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <HotkeysProvider>
-        <BrowserRouter>
-          <Shell />
-        </BrowserRouter>
-      </HotkeysProvider>
+      {/* Outside the router on purpose: subscriptions must outlive the route that opened them,
+          which is what makes returning to a room instant and keeps a room you are not looking
+          at up to date. */}
+      <SyncProvider>
+        <HotkeysProvider>
+          <BrowserRouter>
+            <Shell />
+          </BrowserRouter>
+        </HotkeysProvider>
+      </SyncProvider>
     </QueryClientProvider>
   </StrictMode>,
 );

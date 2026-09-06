@@ -65,9 +65,15 @@ importers:
       '@shadcn/react':
         specifier: ^0.3.1
         version: 0.3.1(@types/react@19.2.18)(react@19.2.8)
+      '@tanstack/db':
+        specifier: 0.8.7
+        version: 0.8.7(typescript@6.0.3)
       '@tanstack/hotkeys':
         specifier: 0.8.0
         version: 0.8.0
+      '@tanstack/react-db':
+        specifier: ^0.3.7
+        version: 0.3.7(react@19.2.8)(typescript@6.0.3)
       '@tanstack/react-form':
         specifier: ^1.33.5
         version: 1.33.5(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -138,6 +144,9 @@ importers:
       '@types/react-dom':
         specifier: ^19.2.7
         version: 19.2.7(@types/react@19.2.18)
+      '@vitejs/plugin-basic-ssl':
+        specifier: ^2.3.0
+        version: 2.3.0(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))
       '@vitejs/plugin-react':
         specifier: ^6.1.1
         version: 6.1.1(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))
@@ -152,6 +161,10 @@ importers:
         version: 5.0.0(@types/node@26.4.1)(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))
 
   apps/desktop:
+    dependencies:
+      '@relay/persist-sqlite':
+        specifier: workspace:*
+        version: link:../../packages/persist-sqlite
     devDependencies:
       '@relay/tsconfig':
         specifier: workspace:*
@@ -249,10 +262,20 @@ importers:
         version: link:../tsconfig
 
   packages/persist-sqlite:
+    dependencies:
+      '@tanstack/db-sqlite-persistence-core':
+        specifier: 0.2.20
+        version: 0.2.20(typescript@6.0.3)
+      '@tanstack/electron-db-sqlite-persistence':
+        specifier: 0.1.32
+        version: 0.1.32(typescript@6.0.3)
     devDependencies:
       '@relay/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@types/node':
+        specifier: ^26.4.1
+        version: 26.4.1
 
   packages/schema:
     dependencies:
@@ -280,6 +303,19 @@ importers:
         version: 5.0.0(@types/node@26.4.1)(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))
 
   packages/sync:
+    dependencies:
+      '@tanstack/db':
+        specifier: 0.8.7
+        version: 0.8.7(typescript@6.0.3)
+      '@tanstack/db-sqlite-persistence-core':
+        specifier: 0.2.20
+        version: 0.2.20(typescript@6.0.3)
+      '@tanstack/electric-db-collection':
+        specifier: 0.4.7
+        version: 0.4.7(supports-color@10.2.2)(typescript@6.0.3)
+      '@tanstack/electron-db-sqlite-persistence':
+        specifier: 0.1.32
+        version: 0.1.32(typescript@6.0.3)
     devDependencies:
       '@relay/tsconfig':
         specifier: workspace:*
@@ -607,6 +643,10 @@ packages:
     engines: {bun: '>=1', deno: '>=2.7.10', node: '>=16'}
     peerDependencies:
       '@noble/ciphers': ^1.0.0
+
+  '@electric-sql/client@1.5.27':
+    resolution: {integrity: sha512-JXyhdg2CBvTRGK1aEGBkb24HoN4Zk9v5lA9Ibxjmcrgjt1j/NgnXndxmuSxVtAYZsM4no5kHXfTnFplgiI9ztg==}
+    hasBin: true
 
   '@electron-internal/extract-zip@1.0.5':
     resolution: {integrity: sha512-+bqFCP98pLI0Tt0XQo1TmlXtwjWchISndDOxCkEcIuUgXWpBnLyRI+2DU+mesvnMMX6L1XDqYNA0lXNDHd/yiA==}
@@ -1491,6 +1531,9 @@ packages:
   '@jridgewell/trace-mapping@0.3.9':
     resolution: {integrity: sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ==}
 
+  '@microsoft/fetch-event-source@2.0.1':
+    resolution: {integrity: sha512-W6CLUJ2eBMw3Rec70qrsEW0jOm/3twwJv21mrmj2yORiaVmVYGS4sSS5yUwvQc1ZlDLYGPnClVWmUUMagKNsfA==}
+
   '@modelcontextprotocol/sdk@1.30.0':
     resolution: {integrity: sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA==}
     engines: {node: '>=18'}
@@ -1809,6 +1852,11 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
+  '@rollup/rollup-darwin-arm64@4.63.1':
+    resolution: {integrity: sha512-FQNqd1lRy/0QhDk3xeRIkSBiCpXCiDnZO3YLVdcDKN1UBiKToNftCzcXYNLshmPDUMlu2TdeS8tGcsU6f3YF1Q==}
+    cpu: [arm64]
+    os: [darwin]
+
   '@sec-ant/readable-stream@0.4.1':
     resolution: {integrity: sha512-831qok9r2t8AlxLko40y2ebgSDhenenCatLVeW/uBtnHPyhHOvG0C7TvfgecV+wHzIm5KUICgzmVpWS+IMEAeg==}
 
@@ -1986,10 +2034,33 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
 
+  '@tanstack/db-ivm@0.1.19':
+    resolution: {integrity: sha512-3VGvgNXAPSVqny/pL8Y6n/txnaZzV49WmgSQ9N5eyCQNgMtuOEOJHKDatqqCy3gDxVu6pkhSHDKxcNFOtxMouw==}
+    peerDependencies:
+      typescript: '>=4.7'
+
+  '@tanstack/db-sqlite-persistence-core@0.2.20':
+    resolution: {integrity: sha512-IHWG267FJ0kym+li8yYm6zkxWLJn/RH+i5/F+I5gTqzAlzLUNfj2vacbK4zEVaSVLtwDjk6BzLfYE6+s7lCM9g==}
+    peerDependencies:
+      typescript: '>=4.7'
+
+  '@tanstack/db@0.8.7':
+    resolution: {integrity: sha512-NIocfK737qPvkE1Ot2iM5PXN6CSBZY5cw1ovAwo0RvQDc/iinyr3x7v+kavoiWxClbkul98J/wRzr0KLanMxOA==}
+    peerDependencies:
+      typescript: '>=4.7'
+
   '@tanstack/devtools-event-client@0.4.4':
     resolution: {integrity: sha512-6T5Yop/793YI+H+5J8Hsyj4kCih9sl4t3ElLgKioW5hk3ocn+ZdSJ94tT7vL7uabxSugWYBZlOTMPzEw2puvQw==}
     engines: {node: '>=18'}
     hasBin: true
+
+  '@tanstack/electric-db-collection@0.4.7':
+    resolution: {integrity: sha512-FXmHGe0ZsU/pp1UsEU7HMVd9hm9oQWzxnLamZ2b4av1DIxyIJY51Oof2xtSlBa2V/alEHASSS10gYmXN3ENbdA==}
+
+  '@tanstack/electron-db-sqlite-persistence@0.1.32':
+    resolution: {integrity: sha512-z/Ajm6O4rP/QxuLBtyjwuznlZyV/ebjsk4ScOn7HSmXaG0AIuNhlFALp3oNvaIwf4ZCKsx8H7MTXJtcCYSa57w==}
+    peerDependencies:
+      typescript: '>=4.7'
 
   '@tanstack/form-core@1.33.5':
     resolution: {integrity: sha512-3dfx9MBP0aq5sXKteikG629X9oviptrQj0IFRk9YGcb+lB7Kv5x8S17oOSk1wUWgjQZ4xVJEMbKwOAODymocgA==}
@@ -2002,8 +2073,17 @@ packages:
     resolution: {integrity: sha512-y/xtNPNt/YeyoVxE/JCx+T7yjEzpezmbb+toK8DDD1P4m7Kzs5YR956+7OKexG3f8aXgC3rLZl7b1V+yNUSy5w==}
     engines: {node: '>=18'}
 
+  '@tanstack/pacer-lite@0.2.2':
+    resolution: {integrity: sha512-eQ1MyLKCHyXiH7NbdmB80W77OhiMgGBUb+qDx/8WMGbwg5Lf/NlfD0TfNYAqY77i8V3AxoDoYdICrQE5ADw4Yw==}
+    engines: {node: '>=18'}
+
   '@tanstack/query-core@5.102.8':
     resolution: {integrity: sha512-ZNjkJ33CqvPNec/6lZBnHqLc3EVGPZ9ySLhYahU9TcuRFdmwXewuj0c4hwSWcGHqEUwcSrKeZ+oGcvPBqXcQcg==}
+
+  '@tanstack/react-db@0.3.7':
+    resolution: {integrity: sha512-u0AmiKNyyZoYcTVWEFJ5NG+6mQ6mFKzxwQNeljW8mLPzM7vIBZMVfD5QxUDg7j/54ggsVNkp+MIFisaWEXxVug==}
+    peerDependencies:
+      react: '>=16.8.0'
 
   '@tanstack/react-form@1.33.5':
     resolution: {integrity: sha512-LlRB28qJwO/QCGaHvWnbdh4haBgTFiZVmzA2uzxSBS3YA7/IqrQ6HOBK70CkFQ+DbflZ7NawsmSln13h5iIdTA==}
@@ -2034,6 +2114,9 @@ packages:
 
   '@tanstack/store@0.11.1':
     resolution: {integrity: sha512-mzTOBhypOuDJAy/D8n2MfUZ1HFkXnmSETviRyhqEC8LUE7/IZQExOTxMANj3KjTofYTkFNpBY67qaVrT41YccA==}
+
+  '@tanstack/store@0.9.3':
+    resolution: {integrity: sha512-8reSzl/qGWGGVKhBoxXPMWzATSbZLZFWhwBAFO9NAyp0TxzfBP0mIrGb8CP8KrQTmvzXlR/vFPPUrHTLBGyFyw==}
 
   '@tldraw/state@5.4.0':
     resolution: {integrity: sha512-ZymyURBo36GgDb7gZmaSCFpZIH1HoxTi4XqqYQ4yCD4T+hfUAHhNkeE+Knc7ApJ90KPjI3/rsAkFGHtNaF7zaA==}
@@ -2183,6 +2266,12 @@ packages:
   '@typescript-eslint/visitor-keys@8.69.0':
     resolution: {integrity: sha512-+rmdgPA+EXkNgKYvHvFfhrs35utXbwaC5PGpDquSXcoXQDKUA5UjV0LmTucG/4JXkM31BTu4TilHtrN8IVBe8w==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+
+  '@vitejs/plugin-basic-ssl@2.3.0':
+    resolution: {integrity: sha512-bdyo8rB3NnQbikdMpHaML9Z1OZPBu6fFOBo+OtxsBlvMJtysWskmBcnbIDhUqgC8tcxNv/a+BcV5U+2nQMm1OQ==}
+    engines: {node: ^18.0.0 || ^20.0.0 || >=22.0.0}
+    peerDependencies:
+      vite: ^6.0.0 || ^7.0.0 || ^8.0.0
 
   '@vitejs/plugin-react@6.1.1':
     resolution: {integrity: sha512-yxLaQV9gkhS8ezJqCM6+ndU7mDY6gqAg75NQ+0IjwEI8IYOmQCgkRwHKVSfWXW076DsqMo0Dk+0FK1U+M5RgFw==}
@@ -2961,6 +3050,10 @@ packages:
   forwarded@0.2.0:
     resolution: {integrity: sha512-buRG0fpBtRHSTCOASe6hD258tEubFoRLb4ZNA6NxMVHNw2gOcwHo9wyablzMzOA5z9xA9L1KNjk/Nt6MT9aYow==}
     engines: {node: '>= 0.6'}
+
+  fractional-indexing@3.4.0:
+    resolution: {integrity: sha512-8J3glhz2rrpKG6KmI7wmJo3zH1VjeOpN+vTJSw1fOyO+Viqq3zX6/5NGh6oaZB2qIAYdOYuu5Dz9xp4faOO0Pg==}
+    engines: {node: ^14.13.1 || >=16.0.0}
 
   fresh@2.0.0:
     resolution: {integrity: sha512-Rx/WycZ60HOaqLKAi6cHRKKI7zxWbJ31MhntmtwMoaTeF7XFH9hhBp8vITaMidfljRQ6eYWCKkaTK+ykVJHP2A==}
@@ -3968,6 +4061,9 @@ packages:
     resolution: {integrity: sha512-e0VyvkVTwVYViNovRkZ9aodhxVlyoMn7eJhVUPxZ+eK9P/7CBkxvvsBOHqFPEH416726W8tLXXXjKwqgTErrCQ==}
     engines: {node: '>= 10.0.0', npm: '>= 3.0.0'}
 
+  sorted-btree@1.8.1:
+    resolution: {integrity: sha512-395+XIP+wqNn3USkFSrNz7G3Ss/MXlZEqesxvzCRFwL14h6e8LukDHdLBePn5pwbm5OQ9vGu8mDyz2lLDIqamQ==}
+
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
@@ -4779,6 +4875,12 @@ snapshots:
     dependencies:
       '@noble/ciphers': 1.3.0
 
+  '@electric-sql/client@1.5.27':
+    dependencies:
+      '@microsoft/fetch-event-source': 2.0.1
+    optionalDependencies:
+      '@rollup/rollup-darwin-arm64': 4.63.1
+
   '@electron-internal/extract-zip@1.0.5': {}
 
   '@electron/get@5.1.0(supports-color@10.2.2)':
@@ -5312,6 +5414,8 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
+  '@microsoft/fetch-event-source@2.0.1': {}
+
   '@modelcontextprotocol/sdk@1.30.0(supports-color@10.2.2)(zod@3.25.76)':
     dependencies:
       '@hono/node-server': 2.1.1(hono@4.13.5)
@@ -5564,6 +5668,9 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
+  '@rollup/rollup-darwin-arm64@4.63.1':
+    optional: true
+
   '@sec-ant/readable-stream@0.4.1': {}
 
   '@shadcn/react@0.3.1(@types/react@19.2.18)(react@19.2.8)':
@@ -5679,7 +5786,42 @@ snapshots:
       tailwindcss: 4.3.3
       vite: 8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0)
 
+  '@tanstack/db-ivm@0.1.19(typescript@6.0.3)':
+    dependencies:
+      fractional-indexing: 3.4.0
+      sorted-btree: 1.8.1
+      typescript: 6.0.3
+
+  '@tanstack/db-sqlite-persistence-core@0.2.20(typescript@6.0.3)':
+    dependencies:
+      '@standard-schema/spec': 1.1.0
+      '@tanstack/db': 0.8.7(typescript@6.0.3)
+      typescript: 6.0.3
+
+  '@tanstack/db@0.8.7(typescript@6.0.3)':
+    dependencies:
+      '@standard-schema/spec': 1.1.0
+      '@tanstack/db-ivm': 0.1.19(typescript@6.0.3)
+      '@tanstack/pacer-lite': 0.2.2
+      typescript: 6.0.3
+
   '@tanstack/devtools-event-client@0.4.4': {}
+
+  '@tanstack/electric-db-collection@0.4.7(supports-color@10.2.2)(typescript@6.0.3)':
+    dependencies:
+      '@electric-sql/client': 1.5.27
+      '@standard-schema/spec': 1.1.0
+      '@tanstack/db': 0.8.7(typescript@6.0.3)
+      '@tanstack/store': 0.9.3
+      debug: 4.4.3(supports-color@10.2.2)
+    transitivePeerDependencies:
+      - supports-color
+      - typescript
+
+  '@tanstack/electron-db-sqlite-persistence@0.1.32(typescript@6.0.3)':
+    dependencies:
+      '@tanstack/db-sqlite-persistence-core': 0.2.20(typescript@6.0.3)
+      typescript: 6.0.3
 
   '@tanstack/form-core@1.33.5':
     dependencies:
@@ -5693,7 +5835,17 @@ snapshots:
 
   '@tanstack/pacer-lite@0.1.1': {}
 
+  '@tanstack/pacer-lite@0.2.2': {}
+
   '@tanstack/query-core@5.102.8': {}
+
+  '@tanstack/react-db@0.3.7(react@19.2.8)(typescript@6.0.3)':
+    dependencies:
+      '@tanstack/db': 0.8.7(typescript@6.0.3)
+      react: 19.2.8
+      use-sync-external-store: 1.6.0(react@19.2.8)
+    transitivePeerDependencies:
+      - typescript
 
   '@tanstack/react-form@1.33.5(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
@@ -5723,6 +5875,8 @@ snapshots:
       use-sync-external-store: 1.6.0(react@19.2.8)
 
   '@tanstack/store@0.11.1': {}
+
+  '@tanstack/store@0.9.3': {}
 
   '@tldraw/state@5.4.0':
     dependencies:
@@ -5907,6 +6061,10 @@ snapshots:
     dependencies:
       '@typescript-eslint/types': 8.69.0
       eslint-visitor-keys: 5.0.1
+
+  '@vitejs/plugin-basic-ssl@2.3.0(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))':
+    dependencies:
+      vite: 8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0)
 
   '@vitejs/plugin-react@6.1.1(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))':
     dependencies:
@@ -6667,6 +6825,8 @@ snapshots:
   flatted@3.4.4: {}
 
   forwarded@0.2.0: {}
+
+  fractional-indexing@3.4.0: {}
 
   fresh@2.0.0: {}
 
@@ -7592,6 +7752,8 @@ snapshots:
     dependencies:
       ip-address: 10.7.0
       smart-buffer: 4.2.0
+
+  sorted-btree@1.8.1: {}
 
   source-map-js@1.2.1: {}
 
