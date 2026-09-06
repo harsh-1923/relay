@@ -1,3 +1,4 @@
+import { HotkeysProvider } from '@tanstack/react-hotkeys';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { StrictMode, useCallback, useEffect, useState } from 'react';
 import { useDefaultLayout, usePanelRef, type LayoutStorage } from 'react-resizable-panels';
@@ -5,9 +6,12 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter, matchPath, Navigate, Route, Routes, useLocation } from 'react-router';
 
 import { AppSidebar } from '@/components/app-sidebar';
+import { CommandPalette } from '@/components/command-palette';
+import { ShortcutsSheet } from '@/components/shortcuts-sheet';
 import { TitleBar } from '@/components/title-bar';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { SidebarProvider } from '@/components/ui/sidebar';
+import { useShellCommands } from '@/lib/app-commands';
 import { useDeepLinkNavigation } from '@/lib/deep-links';
 import { paths, patterns } from '@/lib/paths';
 import { queryClient } from '@/lib/query';
@@ -249,16 +253,12 @@ function Shell() {
     if (p.isCollapsed()) p.expand();
     else p.collapse();
   }, [panel]);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'b' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        togglePanel();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [togglePanel]);
+  useShellCommands({
+    tabs,
+    session,
+    workspaces: api.workspaces,
+    onToggleSidebar: togglePanel,
+  });
   useDeepLinkNavigation(
     tabs.strip
       ? (path) => tabs.open(path, titleFor(path.split('?')[0]!, api.workspaces))
@@ -284,6 +284,10 @@ function Shell() {
   return (
     <TabsProvider value={tabs}>
       <div className="flex h-full flex-col">
+        {/* Both read the command store, so they list what is actually declared. Mounted at the
+            shell so they outlive the routes whose commands they show. */}
+        <ShortcutsSheet />
+        <CommandPalette />
         {/* Above the sidebar, not beside it: the tabs belong to the window, not to a
             workspace, and the traffic lights sit in this strip. */}
         <TitleBar tabs={tabs} gutterWidth={sidebarWidth} onToggleSidebar={togglePanel} />
@@ -305,8 +309,8 @@ function Shell() {
                 id="sidebar"
                 panelRef={panel}
                 defaultSize={256}
-                minSize={180}
-                maxSize={480}
+                minSize={230}
+                maxSize={320}
                 collapsible
                 collapsedSize={0}
               >
@@ -338,9 +342,11 @@ function Shell() {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <Shell />
-      </BrowserRouter>
+      <HotkeysProvider>
+        <BrowserRouter>
+          <Shell />
+        </BrowserRouter>
+      </HotkeysProvider>
     </QueryClientProvider>
   </StrictMode>,
 );

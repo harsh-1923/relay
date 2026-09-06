@@ -5,6 +5,14 @@
 
 @custom-variant dark (&:is(.dark *));
 
+@utility corner-round {
+  corner-shape: round;
+}
+
+@utility corner-squircle {
+  corner-shape: squircle;
+}
+
 /* The app fills the window; everything else about type and colour is the preset. */
 html,
 body,
@@ -128,10 +136,22 @@ body,
   * {
     @apply border-border outline-ring/50;
   }
+
+  * {
+    corner-shape: squircle;
+  }
+
+  [class*='rounded-full'] {
+    corner-shape: round;
+  }
+
   body {
     @apply bg-background text-foreground;
   }
+
   html {
     @apply font-sans;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--muted-foreground) 35%, transparent) transparent;
   }
 }

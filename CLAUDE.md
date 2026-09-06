@@ -138,11 +138,23 @@ import { MultipleCrossCancelDefault as XIcon } from '@relay/icons';
 ```
 
 The whole shadcn library is vendored (`apps/client/src/components/ui/`, 61 components), so
-this has been done once across all of them. Two things to expect on the next `shadcn add
---overwrite`: it re-introduces `lucide-react` imports in whatever it rewrites, and it reverts
+this has been done once across all of them. Three things to expect on the next `shadcn add
+--overwrite`: it re-introduces `lucide-react` imports in whatever it rewrites, it reverts
 small local fixes — the `eqeqeq` slip in upstream's `field.tsx`, and the `use-mobile` import
-that the CLI writes against a `@/components/hooks/` alias that does not exist. Re-run the
-checks after any add.
+that the CLI writes against a `@/components/hooks/` alias that does not exist — and it puts
+back the ⌘B `keydown` listener in `sidebar.tsx`, which was deleted because `sidebar.toggle`
+owns that chord (see **Shortcuts** below). Re-run the checks after any add.
+
+### Shortcuts
+
+Every keyboard shortcut is a **command**, declared with `useCommand` from
+`apps/client/src/lib/commands.ts` and colocated with the thing it acts on. Never add a
+`keydown` listener: a command is reachable from its chord, the ⌘K palette and the ⌘/ help
+sheet at once, and the registry is what stops two features silently claiming one chord —
+duplicates throw in development and warn in production.
+
+`docs/plans/shortcuts.md` carries the decisions, the survey of the alternatives, and why
+sequences (`g` then `r`) are deliberately not built yet.
 
 ### Version-sensitive, verify rather than recall
 
