@@ -126,9 +126,23 @@ from `@relay/icons`.
 
 `apps/client/components.json`'s `iconLibrary` stays `"lucide"` — the shadcn CLI only knows how
 to substitute icons from a fixed list of packages (`lucide-react`, `@tabler/icons-react`,
-`@phosphor-icons`, `hugeicons`, `remixicon`) and cannot target `@relay/icons`. So after
-`shadcn add` generates a component, replace any `lucide-react` icon import it produces with
-the `@relay/icons` equivalent by hand before committing.
+`@phosphor-icons`, `hugeicons`, `remixicon`) and cannot target `@relay/icons`. So after any
+`shadcn add`, rewrite the `lucide-react` imports it generates. **`lucide-react` is not a
+dependency**, so a missed one fails the typecheck rather than shipping — that is the check.
+
+Rewrite them as _aliased_ imports, which leaves component bodies untouched and keeps the file
+close to upstream:
+
+```ts
+import { MultipleCrossCancelDefault as XIcon } from '@relay/icons';
+```
+
+The whole shadcn library is vendored (`apps/client/src/components/ui/`, 61 components), so
+this has been done once across all of them. Two things to expect on the next `shadcn add
+--overwrite`: it re-introduces `lucide-react` imports in whatever it rewrites, and it reverts
+small local fixes — the `eqeqeq` slip in upstream's `field.tsx`, and the `use-mobile` import
+that the CLI writes against a `@/components/hooks/` alias that does not exist. Re-run the
+checks after any add.
 
 ### Version-sensitive, verify rather than recall
 
