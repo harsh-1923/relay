@@ -156,6 +156,17 @@ duplicates throw in development and warn in production.
 `docs/plans/shortcuts.md` carries the decisions, the survey of the alternatives, and why
 sequences (`g` then `r`) are deliberately not built yet.
 
+### Resizable panels
+
+In every `ResizablePanelGroup`, the fixed-width chrome panel takes
+`groupResizeBehavior="preserve-pixel-size"` and the flexible content panel keeps the default.
+Resizing the window then changes the content, not the chrome.
+
+The library defaults to `preserve-relative-size`, which holds each panel's _percentage_ of the
+group — so without this a sidebar the user has deliberately sized drifts every time the window
+moves. A group needs at least one panel on the default behaviour, which is why the content
+panel is the one that keeps it.
+
 ### Version-sensitive, verify rather than recall
 
 - **Cloudflare Sandbox SDK** is at 1.0 preview and its HTTP/WebSocket transports are already

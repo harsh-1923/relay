@@ -305,12 +305,24 @@ function Shell() {
               defaultLayout={layout.defaultLayout}
               onLayoutChanged={layout.onLayoutChanged}
             >
+              {/**
+               * The sidebar keeps its pixel width when the window is resized; the content
+               * panel absorbs the difference.
+               *
+               * The library's default is `preserve-relative-size`, which holds each panel's
+               * percentage of the group — so dragging the window edge scales the sidebar too,
+               * and a chrome element the user has deliberately sized drifts on every resize.
+               * The rule for every group we build: the fixed-width chrome preserves pixels,
+               * and the flexible content panel keeps the default. A group needs at least one
+               * of the latter, which is what makes this the right way round.
+               */}
               <ResizablePanel
                 id="sidebar"
                 panelRef={panel}
                 defaultSize={256}
                 minSize={230}
                 maxSize={320}
+                groupResizeBehavior="preserve-pixel-size"
                 collapsible
                 collapsedSize={0}
               >
