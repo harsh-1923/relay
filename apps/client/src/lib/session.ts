@@ -3,6 +3,8 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { bridge, detectPlatform } from '@relay/sync/platform';
 
+import { apiUrl } from './api';
+import { forgetIdentity, lastIdentity, rememberIdentity } from './identity';
 import { keys } from './query';
 
 /** `canInvite`: whether this user runs the org — owner or admin. Decides if inviting is offered. */
@@ -87,7 +89,7 @@ export async function authed(path: string, init: RequestInit = {}) {
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const r = await fetch(path, { ...init, headers, credentials: 'include' });
+  const r = await fetch(apiUrl(path), { ...init, headers, credentials: 'include' });
   const body: unknown = await r.json().catch(() => null);
 
   const refreshed = (body as { refreshedSession?: string } | null)?.refreshedSession;
@@ -170,6 +172,9 @@ export function useSession(): SessionApi {
   }, []);
 
   const signOut = useCallback(() => {
+    // Before anything async: a signed-out device must not reopen this account's database on
+    // its next launch, and sign-out may well be the last thing that runs in this window.
+    forgetIdentity();
     const b = bridge();
     if (b) void b.auth.signOut();
     else window.location.href = '/auth/logout';
@@ -177,6 +182,8 @@ export function useSession(): SessionApi {
 
   /** Switching account swaps the seal; the session and its orgs are then a different user's. */
   const switchAccount = useCallback((userId: string) => {
+    // The remembered identity belongs to the account being left.
+    forgetIdentity();
     void bridge()?.auth.switchAccount(userId);
   }, []);
 
@@ -273,13 +280,48 @@ export function useSession(): SessionApi {
     },
   });
 
-  const state: SessionState = session.isPending
-    ? { status: 'loading' }
-    : session.data
-      ? { status: 'in', session: session.data }
-      : pending
-        ? { status: 'pending' }
-        : { status: 'out', error: signInError };
+  /**
+   * Remember who this is, so the next launch can open their local database before the network
+   * answers. Without it an offline start renders an empty shell over a full SQLite file,
+   * because `/auth/session` gates everything downstream of it.
+   */
+  useEffect(() => {
+    const s = session.data;
+    if (s?.organizationId)
+      rememberIdentity({
+        userId: s.userId,
+        organizationId: s.organizationId,
+        sessionId: s.sessionId,
+        email: s.email,
+      });
+  }, [session.data]);
+
+  /**
+   * Signed out and unreachable are different answers, and conflating them is what made the app
+   * useless offline. `/auth/session` returning 401 resolves to `null` — that is a real sign-out
+   * and the sign-in screen is correct. A *failed request* throws, and means only that we could
+   * not ask; the last known account is then better than pretending nobody is here.
+   *
+   * The cache is also used while the request is still in flight, which is what makes an
+   * offline launch instant rather than a spinner followed by data. If the server does come
+   * back with a 401, `session.data` is null, the cache is not consulted, and the state flips
+   * to signed out on its own.
+   */
+  const cached = session.data === null ? null : lastIdentity();
+  const offlineSession: Session | null =
+    cached && (session.isError || session.isPending)
+      ? { ...cached, organizationId: cached.organizationId, canInvite: false }
+      : null;
+
+  const state: SessionState = session.data
+    ? { status: 'in', session: session.data }
+    : offlineSession
+      ? { status: 'in', session: offlineSession }
+      : session.isPending
+        ? { status: 'loading' }
+        : pending
+          ? { status: 'pending' }
+          : { status: 'out', error: signInError };
 
   return {
     state,
