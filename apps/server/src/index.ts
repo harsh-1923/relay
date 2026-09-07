@@ -23,10 +23,12 @@ import {
 import type { Env as InvitationEnv } from './auth/invitations';
 import type { Env as SignupEnv } from './auth/signup';
 import { db } from './db';
+import { applyMutations, type Mutation } from './powersync/mutations';
+import { powerSyncCredentials, type Env as PowerSyncEnv } from './powersync/token';
 import { createWorkspace, isMemberOf, switchTargets } from './tenancy';
 import { handleWorkosWebhook, type Env as WebhookEnv } from './webhooks/workos';
 
-type Env = WebhookEnv & SignupEnv & InvitationEnv;
+type Env = WebhookEnv & SignupEnv & InvitationEnv & PowerSyncEnv;
 
 const withCookies = (headers: Record<string, string>, cookies: string[]) => {
   const h = new Headers(headers);
@@ -364,6 +366,57 @@ export default {
         }
 
         return json({ error: 'method_not_allowed' }, 405);
+      }
+
+      /**
+       * The credential the sync engine runs on.
+       *
+       * Called by the client's `fetchCredentials()` on connect and again whenever the token
+       * expires, so it is on the critical path for every read — but it authorises nothing
+       * itself. The claims it mints are what `sync-streams.yaml` resolves access from, and a
+       * session that will not unseal simply gets no token, which is how signing out stops a
+       * device syncing.
+       */
+      case '/api/powersync/token': {
+        const u = await unsealSession(request, env);
+        if (!u) return json({ error: 'unauthenticated' }, 401);
+
+        const result = await powerSyncCredentials(env, u.session);
+        if (!result.ok) return json({ error: result.reason }, 403);
+
+        const body = result.credentials;
+        if (!u.refreshed) return json(body);
+        if (request.headers.get('Authorization'))
+          return json({ ...body, refreshedSession: u.refreshed });
+        return json(body, 200, [setSessionCookie(u.refreshed, secure)]);
+      }
+
+      /**
+       * The write path. Everything a device queued locally arrives here, and nothing reaches
+       * Postgres without passing `access.ts` first — see `powersync/mutations.ts` for why the
+       * client's own database is not a trust boundary.
+       *
+       * Always answers 200 when the batch was processed, even if operations inside it were
+       * refused: PowerSync re-uploads until the server accepts, so a 4xx on a forbidden write
+       * would wedge that device's queue forever. Rejections come back in the body instead,
+       * and the offending local row disappears when authoritative state syncs down.
+       */
+      case '/api/mutations': {
+        if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+
+        const u = await unsealSession(request, env);
+        if (!u) return json({ error: 'unauthenticated' }, 401);
+
+        const payload = (await request.json().catch(() => null)) as { batch?: Mutation[] } | null;
+        if (!Array.isArray(payload?.batch)) return json({ error: 'batch_required' }, 400);
+
+        const result = await applyMutations(env, u.session, payload.batch);
+        if ('error' in result) return json(result, 403);
+
+        if (!u.refreshed) return json(result);
+        if (request.headers.get('Authorization'))
+          return json({ ...result, refreshedSession: u.refreshed });
+        return json(result, 200, [setSessionCookie(u.refreshed, secure)]);
       }
 
       case '/auth/logout': {

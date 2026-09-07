@@ -18,6 +18,7 @@
     "@relay/schema": "workspace:*",
     "@workos-inc/node": "^10.13.0",
     "drizzle-orm": "^0.45.2",
+    "jose": "^6.2.12",
     "postgres": "^3.4.9"
   }
 }

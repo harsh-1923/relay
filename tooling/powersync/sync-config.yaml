@@ -1,0 +1,196 @@
+# yaml-language-server: $schema=https://unpkg.com/@powersync/service-sync-rules@latest/schema/sync_rules.json
+
+# Which rows reach a device, and on whose authority.
+#
+# This file is the replacement for the Electric shape registry that used to live in
+# `packages/schema/src/shapes/`, and it carries the same rule: **the client names a stream, it
+# never names a table, a filter or a tenant.** Everything that decides access is either a
+# signed JWT claim or a subquery against the database. A client that could express its own
+# predicate could widen its own access, so it cannot.
+#
+# It is the read half of `apps/server/src/access.ts` restated in PowerSync's language, and the
+# two MUST agree — `powersync.md` P7 calls a drift here a silent data leak, because it is one.
+# Read that file's `mayReadRoom` and `mayReadConversation` beside this one.
+#
+# Sync Streams (edition 3), not `bucket_definitions`: streams are GA, are what PowerSync
+# recommends for new projects, and give us on-demand subscription with a TTL cache, which is
+# what lets a public room a viewer has not joined be read without syncing every such room.
+
+config:
+  edition: 3
+
+# ── trusted inputs ────────────────────────────────────────────────────────────
+#
+#   auth.user_id()                    the WorkOS user id — the JWT `sub`
+#   auth.parameter('organization_id') the org the session is pinned to
+#   auth.parameter('actor_id')        this person's actor in that org
+#
+# All three are minted server-side in `apps/server/src/powersync/token.ts` and signed, so they
+# cannot be tampered with. `subscription.parameter(...)` is client-supplied and is therefore
+# NEVER an authority — where one appears below it is always intersected with a subquery that
+# re-derives the right from auth claims.
+#
+# `organization_id` is a claim rather than a lookup because a person can hold an actor in more
+# than one organization. The session pins exactly one (invariant 3); without the claim, a
+# multi-org user would sync every org they belong to, which is a tenancy violation.
+
+streams:
+  # Everyone addressable in the organization.
+  #
+  # Org-scoped and identical for every member, which makes it the cheapest thing here and the
+  # reason `actors` carries `display_name` at all: rendering an author, a member or a panel
+  # owner is one local join, and `users` — which holds emails and no organization — never
+  # leaves the server.
+  actors:
+    auto_subscribe: true
+    query: SELECT * FROM actors WHERE organization_id = auth.parameter('organization_id')
+
+  # The room directory, in two queries for the two ways a room becomes visible.
+  #
+  # This is D3's visibility union, and it is resolved here rather than on the client — which is
+  # the whole difference from the Electric build, where the two had to be separate shapes and
+  # reconciled in `RoomList` because a subquery could not be trusted to resolve in time.
+  #
+  # Names only: being able to *see* a room in the sidebar is not being subscribed to its
+  # contents. That separation is what keeps a large workspace cheap.
+  rooms:
+    auto_subscribe: true
+    with:
+      my_workspaces: |
+        SELECT workspace_id FROM workspace_memberships
+        WHERE user_id = auth.user_id()
+          AND organization_id = auth.parameter('organization_id')
+      my_memberships: |
+        SELECT room_id FROM room_members
+        WHERE actor_id = auth.parameter('actor_id')
+    queries:
+      # Public: anyone in the workspace, joined or not. `access.ts` mayReadRoom, public path.
+      - |
+        SELECT * FROM rooms
+        WHERE organization_id = auth.parameter('organization_id')
+          AND is_private = false
+          AND archived_at IS NULL
+          AND workspace_id IN (SELECT workspace_id FROM my_workspaces)
+      # Private: only those explicitly added. mayReadRoom, private path. A guest holds an org
+      # membership and no workspace membership, so they fail the query above and pass this one
+      # exactly when they were added — the whole guest model, with no role check anywhere.
+      - |
+        SELECT * FROM rooms
+        WHERE organization_id = auth.parameter('organization_id')
+          AND archived_at IS NULL
+          AND id IN (SELECT room_id FROM my_memberships)
+
+  # Requirement 5: rooms you are *in* stay current whether or not they are on screen.
+  #
+  # This is what `background-sync.tsx` and `warmRoomBudget()` were doing on the client, moved
+  # to where it belongs. There is no connection budget to ration here — one stream, one
+  # connection, every room you belong to — so the requirement stops being something the UI has
+  # to remember to do.
+  #
+  # Membership, not readability: a public room you have never joined is in the directory above
+  # but its messages are not synced until you open it. That is the difference between a
+  # workspace costing what its members read and costing what everyone *could* read.
+  my_rooms:
+    auto_subscribe: true
+    with:
+      my_memberships: |
+        SELECT room_id FROM room_members
+        WHERE actor_id = auth.parameter('actor_id')
+      # Shared only. A private conversation inside one of these rooms is not readable by every
+      # room member, and reaches its own members through `my_conversations` below.
+      # The membership subquery is repeated rather than reusing `my_memberships` above: a CTE
+      # can be referenced from `queries:` but not from a sibling CTE, which the deploy reports
+      # as an unknown table rather than a syntax error.
+      shared_conversations: |
+        SELECT id FROM conversations
+        WHERE visibility = 'shared'
+          AND archived_at IS NULL
+          AND room_id IN (
+            SELECT room_id FROM room_members WHERE actor_id = auth.parameter('actor_id')
+          )
+    queries:
+      - SELECT * FROM room_members WHERE room_id IN (SELECT room_id FROM my_memberships)
+      - |
+        SELECT * FROM conversations
+        WHERE visibility = 'shared'
+          AND archived_at IS NULL
+          AND room_id IN (SELECT room_id FROM my_memberships)
+      - |
+        SELECT * FROM panels
+        WHERE visibility = 'shared'
+          AND archived_at IS NULL
+          AND room_id IN (SELECT room_id FROM my_memberships)
+      - SELECT * FROM messages WHERE conversation_id IN (SELECT id FROM shared_conversations)
+
+  # Private conversations — a panel chat with an agent, and DMs when they exist.
+  #
+  # Keyed on `conversation_members` and never on the room, which is what makes privacy
+  # structural rather than a filter someone has to remember: a non-member's device is never
+  # sent the rows, so there is nothing to accidentally render. `access.ts`
+  # mayReadConversation, private path.
+  my_conversations:
+    auto_subscribe: true
+    with:
+      mine: |
+        SELECT conversation_id FROM conversation_members
+        WHERE actor_id = auth.parameter('actor_id')
+    queries:
+      - SELECT * FROM conversations WHERE id IN (SELECT conversation_id FROM mine)
+      - SELECT * FROM conversation_members WHERE conversation_id IN (SELECT conversation_id FROM mine)
+      - SELECT * FROM messages WHERE conversation_id IN (SELECT conversation_id FROM mine)
+      - |
+        SELECT * FROM panels
+        WHERE conversation_id IN (SELECT conversation_id FROM mine)
+
+  # Opening a public room you have not joined.
+  #
+  # The one stream a client subscribes to by hand, and the only one taking a client-supplied
+  # parameter. `room_id` is NOT an authority: the `readable` CTE re-derives the public read
+  # path from auth claims and the subscription only ever narrows it. Ask for a room you cannot
+  # read and the CTE is empty, so every query below returns nothing.
+  #
+  # Subscribed with a TTL so that stepping through a few rooms leaves them warm rather than
+  # re-fetching on every visit.
+  room:
+    with:
+      readable: |
+        SELECT id FROM rooms
+        WHERE id = subscription.parameter('room_id')
+          AND organization_id = auth.parameter('organization_id')
+          AND is_private = false
+          AND archived_at IS NULL
+          AND workspace_id IN (
+            SELECT workspace_id FROM workspace_memberships
+            WHERE user_id = auth.user_id()
+              AND organization_id = auth.parameter('organization_id')
+          )
+      # Same constraint as `shared_conversations`: `readable` is inlined, not referenced.
+      readable_conversations: |
+        SELECT id FROM conversations
+        WHERE visibility = 'shared'
+          AND archived_at IS NULL
+          AND room_id IN (
+            SELECT id FROM rooms
+            WHERE id = subscription.parameter('room_id')
+              AND organization_id = auth.parameter('organization_id')
+              AND is_private = false
+              AND archived_at IS NULL
+              AND workspace_id IN (
+                SELECT workspace_id FROM workspace_memberships
+                WHERE user_id = auth.user_id()
+                  AND organization_id = auth.parameter('organization_id')
+              )
+          )
+    queries:
+      - SELECT * FROM room_members WHERE room_id IN (SELECT id FROM readable)
+      - |
+        SELECT * FROM conversations
+        WHERE visibility = 'shared'
+          AND archived_at IS NULL
+          AND room_id IN (SELECT id FROM readable)
+      - |
+        SELECT * FROM panels
+        WHERE visibility = 'shared'
+          AND archived_at IS NULL
+          AND room_id IN (SELECT id FROM readable)
+      - SELECT * FROM messages WHERE conversation_id IN (SELECT id FROM readable_conversations)

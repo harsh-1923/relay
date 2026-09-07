@@ -1,0 +1,62 @@
+# PowerSync Cloud instance config, as code.
+# yaml-language-server: $schema=https://unpkg.com/@powersync/cli-schemas@latest/json-schema/service-config.json
+#
+# Deployed with `powersync deploy` from this directory, alongside `sync-config.yaml`. Keeping
+# it in the repo rather than in the dashboard is the whole point: the streams are the read half
+# of `apps/server/src/access.ts`, and a change to either has to be reviewable beside the other.
+#
+# **Safe to commit.** Every secret is a `!env` reference resolved at deploy time from
+# `tooling/powersync/.env`, which is gitignored. Nothing sensitive is in this file.
+
+_type: cloud
+name: Development
+region: us
+
+# ── replication ───────────────────────────────────────────────────────────────
+#
+# A direct Postgres connection, because logical replication is what PowerSync consumes and
+# poolers do not carry it. That is the same constraint Electric had, and it is the most likely
+# thing to need attention here (P8): newer Supabase projects resolve `db.<ref>.supabase.co`
+# over IPv6 only, so if PowerSync cannot reach it the options are Supabase's IPv4 add-on or
+# the session-mode pooler host from the dashboard — never the transaction pooler on 6543.
+replication:
+  connections:
+    - type: postgresql
+      name: relay-spike
+      hostname: db.gdpidcmpjgdvaaavzozb.supabase.co
+      port: 5432
+      database: postgres
+      username: postgres
+      password:
+        secret: !env POWERSYNC_DATABASE_PASSWORD
+      sslmode: verify-full
+
+# ── client auth ───────────────────────────────────────────────────────────────
+#
+# Custom JWTs, **not** Supabase's. `supabase: false` is deliberate and load-bearing: identity
+# comes from WorkOS, and the token `apps/server/src/powersync/token.ts` mints carries
+# `organization_id` and `actor_id` claims that Supabase Auth knows nothing about — and which
+# every stream in `sync-config.yaml` resolves access from. Turning on the Supabase path would
+# accept tokens that carry neither.
+#
+# HS256 with a shared key, which PowerSync supports for development only. `kid` must match the
+# header our signer sets, and `k` is the same base64url value as `POWERSYNC_JWT_SECRET` in
+# `apps/server/.env` — the server signs with it, the instance verifies with it.
+#
+# Production replaces this block with `jwks_uri` pointing at an endpoint we host, and the
+# signer moves to RS256/EdDSA. A symmetric key means PowerSync holds something that can mint a
+# session for any user in any organization, which is fine for a throwaway spike instance and
+# not fine for anything else.
+client_auth:
+  supabase: false
+  jwks:
+    keys:
+      - kty: oct
+        alg: HS256
+        kid: relay-dev
+        k:
+          secret: !env POWERSYNC_CLIENT_AUTH_KEY
+  # The instance domain is always accepted as an audience, and it is what we mint against.
+  additional_audiences: []
+  # Development tokens from the dashboard would bypass the claims above entirely.
+  allow_temporary_tokens: false
