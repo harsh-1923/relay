@@ -1,7 +1,7 @@
-import { index, pgTable, primaryKey, text, uuid } from 'drizzle-orm/pg-core';
+import { index, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
 
 import { actors } from './actors';
-import { createdAt } from './columns';
+import { createdAt, uuidPk } from './columns';
 import { conversations } from './conversations';
 import { organizations } from './organizations';
 import { workspaces } from './workspaces';
@@ -19,6 +19,7 @@ import { workspaces } from './workspaces';
 export const conversationMembers = pgTable(
   'conversation_members',
   {
+    id: uuidPk(),
     conversationId: uuid('conversation_id')
       .notNull()
       .references(() => conversations.id, { onDelete: 'cascade' }),
@@ -34,7 +35,8 @@ export const conversationMembers = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
-    primaryKey({ columns: [t.conversationId, t.actorId] }),
+    // Surrogate `id` beside the real identity, for the same reason as `room_members`.
+    unique('conversation_members_conversation_actor_key').on(t.conversationId, t.actorId),
     index('conversation_members_actor_idx').on(t.actorId, t.workspaceId),
   ],
 );
