@@ -100,7 +100,12 @@ export function CreateWorkspace({
         </form.Subscribe>
 
         {cancelTo && (
-          <Button render={<Link to={cancelTo} />} variant="outline" className="mt-2 w-full">
+          <Button
+            nativeButton={false}
+            render={<Link to={cancelTo} />}
+            variant="outline"
+            className="mt-2 w-full"
+          >
             Cancel
           </Button>
         )}

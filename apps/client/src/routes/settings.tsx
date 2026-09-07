@@ -23,7 +23,12 @@ export function Settings({ session, backTo }: { session: Session; backTo: string
 
         <Invite canInvite={session.canInvite ?? false} />
 
-        <Button render={<Link to={backTo} />} variant="outline" className="mt-6 w-full">
+        <Button
+          nativeButton={false}
+          render={<Link to={backTo} />}
+          variant="outline"
+          className="mt-6 w-full"
+        >
           Back
         </Button>
       </div>

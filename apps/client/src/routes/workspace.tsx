@@ -86,7 +86,12 @@ export function Workspace({
         >
           {swap.isPending ? 'Switching…' : `Switch to ${name}`}
         </Button>
-        <Button render={<Link to={paths.root()} />} variant="outline" className="mt-2 w-full">
+        <Button
+          nativeButton={false}
+          render={<Link to={paths.root()} />}
+          variant="outline"
+          className="mt-2 w-full"
+        >
           Stay here
         </Button>
         {swap.isError && (
@@ -106,7 +111,12 @@ export function Workspace({
         <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
           It does not exist, or this account cannot reach it. Another signed-in account might.
         </p>
-        <Button render={<Link to={paths.root()} />} variant="outline" className="mt-6 w-full">
+        <Button
+          nativeButton={false}
+          render={<Link to={paths.root()} />}
+          variant="outline"
+          className="mt-6 w-full"
+        >
           Go to your workspace
         </Button>
       </Panel>
@@ -126,7 +136,12 @@ export function Workspace({
         </div>
 
         <div className="mt-6 flex gap-2">
-          <Button render={<Link to={paths.settings()} />} variant="outline" className="flex-1">
+          <Button
+            nativeButton={false}
+            render={<Link to={paths.settings()} />}
+            variant="outline"
+            className="flex-1"
+          >
             Settings
           </Button>
           <Button variant="outline" className="flex-1" onClick={onSignOut}>
