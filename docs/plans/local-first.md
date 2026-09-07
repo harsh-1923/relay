@@ -1,5 +1,14 @@
 # Local-first — shapes, persistence, and how much history lives on the device
 
+> [!IMPORTANT]
+> **The engine decision here is superseded by [`powersync.md`](./powersync.md)** (2026-09-07).
+> Electric Cloud wound down after the Databricks acquisition, and self-hosting it is a cost we
+> chose not to keep. Everything in this document that is _not_ about Electric specifically —
+> the requirements, the sync window, `sync_floor`, the inheritance from `rooms.md`, the
+> reasoning about how much history lives on a device — still stands and is still the plan.
+>
+> Read this for **what** syncs and why. Read `powersync.md` for **how**.
+
 > Working plan, and the sibling of [`rooms.md`](./rooms.md). That document decides the tables;
 > this one decides **what syncs, what persists, and what a user can still see with the network
 > off.** They are deliberately separate: the schema can be built and reviewed without settling
