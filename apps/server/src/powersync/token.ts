@@ -7,7 +7,7 @@ import type { Session } from '../auth/session';
 /**
  * The credential a device presents to PowerSync.
  *
- * This is the *entire* authority behind every read. `tooling/powersync/sync-streams.yaml`
+ * This is the *entire* authority behind every read. `tooling/powersync/sync-config.yaml`
  * resolves what a client may see from three claims and nothing else, so what is minted here
  * decides what leaves the database — and a claim taken from the request rather than from the
  * session would be a client choosing its own tenant.

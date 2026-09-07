@@ -16,8 +16,11 @@ import { useDeepLinkNavigation } from '@/lib/deep-links';
 import { paths, patterns } from '@/lib/paths';
 import { queryClient } from '@/lib/query';
 import { useSession, type Session, type SessionApi, type SwitchTarget } from '@/lib/session';
+import { identityKey } from '@/lib/identity';
+import { SyncProvider } from '@/lib/sync';
 import { TabsProvider, titleFor, useTabs } from '@/lib/tabs';
 import { CreateWorkspace } from '@/routes/create-workspace';
+import { Room } from '@/routes/room';
 import { Settings } from '@/routes/settings';
 import { SignIn } from '@/routes/sign-in';
 import { Switcher } from '@/routes/switcher';
@@ -173,6 +176,7 @@ function App({ api }: { api: SessionApi }) {
           />
         }
       />
+      <Route path={patterns.room} element={<Room />} />
       <Route
         path={patterns.settings}
         element={
@@ -282,77 +286,88 @@ function Shell() {
   const content = <App api={api} />;
 
   return (
-    <TabsProvider value={tabs}>
-      <div className="flex h-full flex-col">
-        {/* Both read the command store, so they list what is actually declared. Mounted at the
+    /**
+     * Inside the shell rather than above the router, because it is keyed to the account and
+     * the shell is where the session lives. It still outlives every route — `Shell` does not
+     * remount on navigation — which is what keeps the database open across a room change.
+     */
+    <SyncProvider
+      accountKey={
+        key ? identityKey({ userId: key.accountId, organizationId: key.organizationId }) : null
+      }
+    >
+      <TabsProvider value={tabs}>
+        <div className="flex h-full flex-col">
+          {/* Both read the command store, so they list what is actually declared. Mounted at the
             shell so they outlive the routes whose commands they show. */}
-        <ShortcutsSheet />
-        <CommandPalette />
-        {/* Above the sidebar, not beside it: the tabs belong to the window, not to a
+          <ShortcutsSheet />
+          <CommandPalette />
+          {/* Above the sidebar, not beside it: the tabs belong to the window, not to a
             workspace, and the traffic lights sit in this strip. */}
-        <TitleBar
-          tabs={tabs}
-          gutterWidth={sidebarWidth}
-          onToggleSidebar={togglePanel}
-          hasSidebar={session != null}
-        />
-        {session ? (
-          /**
-           * `open` is pinned: the provider is here for the menu's context, not for layout.
-           * Width and whether the sidebar is open belong to the panel group below, which
-           * persists them under its `id` and makes the divider a real drag handle.
-           */
-          <SidebarProvider open className="min-h-0 flex-1">
-            <ResizablePanelGroup
-              orientation="horizontal"
-              id="relay.sidebar"
-              className="min-h-0 flex-1"
-              defaultLayout={layout.defaultLayout}
-              onLayoutChanged={layout.onLayoutChanged}
-            >
-              {/**
-               * The sidebar keeps its pixel width when the window is resized; the content
-               * panel absorbs the difference.
-               *
-               * The library's default is `preserve-relative-size`, which holds each panel's
-               * percentage of the group — so dragging the window edge scales the sidebar too,
-               * and a chrome element the user has deliberately sized drifts on every resize.
-               * The rule for every group we build: the fixed-width chrome preserves pixels,
-               * and the flexible content panel keeps the default. A group needs at least one
-               * of the latter, which is what makes this the right way round.
-               */}
-              <ResizablePanel
-                id="sidebar"
-                panelRef={panel}
-                defaultSize={256}
-                minSize={230}
-                maxSize={320}
-                groupResizeBehavior="preserve-pixel-size"
-                collapsible
-                collapsedSize={0}
+          <TitleBar
+            tabs={tabs}
+            gutterWidth={sidebarWidth}
+            onToggleSidebar={togglePanel}
+            hasSidebar={session != null}
+          />
+          {session ? (
+            /**
+             * `open` is pinned: the provider is here for the menu's context, not for layout.
+             * Width and whether the sidebar is open belong to the panel group below, which
+             * persists them under its `id` and makes the divider a real drag handle.
+             */
+            <SidebarProvider open className="min-h-0 flex-1">
+              <ResizablePanelGroup
+                orientation="horizontal"
+                id="relay.sidebar"
+                className="min-h-0 flex-1"
+                defaultLayout={layout.defaultLayout}
+                onLayoutChanged={layout.onLayoutChanged}
               >
-                {/* Fills the panel, so its width is the panel's — see `sidebarWidth`. */}
-                <div ref={setSidebarEl} className="h-full min-h-0">
-                  <AppSidebar
-                    workspace={home}
-                    email={session.email}
-                    onSignOut={api.signOut}
-                    switcher={menu}
-                  />
-                </div>
-              </ResizablePanel>
-              <ResizableHandle />
-              <ResizablePanel id="content" className="flex min-h-0 flex-col">
-                <div className="min-h-0 flex-1">{content}</div>
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          </SidebarProvider>
-        ) : (
-          // Signed out there is nothing to navigate; the sign-in screen owns the window.
-          <div className="min-h-0 flex-1">{content}</div>
-        )}
-      </div>
-    </TabsProvider>
+                {/**
+                 * The sidebar keeps its pixel width when the window is resized; the content
+                 * panel absorbs the difference.
+                 *
+                 * The library's default is `preserve-relative-size`, which holds each panel's
+                 * percentage of the group — so dragging the window edge scales the sidebar too,
+                 * and a chrome element the user has deliberately sized drifts on every resize.
+                 * The rule for every group we build: the fixed-width chrome preserves pixels,
+                 * and the flexible content panel keeps the default. A group needs at least one
+                 * of the latter, which is what makes this the right way round.
+                 */}
+                <ResizablePanel
+                  id="sidebar"
+                  panelRef={panel}
+                  defaultSize={256}
+                  minSize={230}
+                  maxSize={320}
+                  groupResizeBehavior="preserve-pixel-size"
+                  collapsible
+                  collapsedSize={0}
+                >
+                  {/* Fills the panel, so its width is the panel's — see `sidebarWidth`. */}
+                  <div ref={setSidebarEl} className="h-full min-h-0">
+                    <AppSidebar
+                      workspace={home}
+                      email={session.email}
+                      onSignOut={api.signOut}
+                      switcher={menu}
+                    />
+                  </div>
+                </ResizablePanel>
+                <ResizableHandle />
+                <ResizablePanel id="content" className="flex min-h-0 flex-col">
+                  <div className="min-h-0 flex-1">{content}</div>
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            </SidebarProvider>
+          ) : (
+            // Signed out there is nothing to navigate; the sign-in screen owns the window.
+            <div className="min-h-0 flex-1">{content}</div>
+          )}
+        </div>
+      </TabsProvider>
+    </SyncProvider>
   );
 }
 

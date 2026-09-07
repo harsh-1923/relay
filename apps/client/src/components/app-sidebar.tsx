@@ -1,3 +1,5 @@
+import { eq } from '@tanstack/db';
+import { useLiveQuery } from '@tanstack/react-db';
 import type { ComponentProps, ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 
@@ -16,6 +18,7 @@ import {
 } from '@/components/ui/sidebar';
 import { paths } from '@/lib/paths';
 import type { SwitchTarget } from '@/lib/session';
+import { useCollections } from '@/lib/sync';
 
 /**
  * The navigation rail, shaped after the `sidebar-10` block.
@@ -26,9 +29,8 @@ import type { SwitchTarget } from '@/lib/session';
  * from anything written here. The upstream `SidebarRail` is gone for the same reason: it wore
  * a resize cursor while only ever toggling on click.
  *
- * Deliberately thin for now. The rooms group below is the point of a sidebar and arrives with
- * the `rooms` table; starred rooms become a group above it, since those sync per user while
- * the open tabs do not.
+ * Starred rooms become a group above the rooms list when they exist, since those sync per
+ * user while the open tabs do not.
  */
 export function AppSidebar({
   workspace,
@@ -70,9 +72,7 @@ export function AppSidebar({
         <SidebarGroup>
           <SidebarGroupLabel>Rooms</SidebarGroupLabel>
           <SidebarGroupContent>
-            <p className="text-muted-foreground px-2 py-1 text-xs">
-              None yet — rooms arrive with the schema.
-            </p>
+            <RoomList workspaceId={workspace?.workspaceId} pathname={pathname} />
           </SidebarGroupContent>
         </SidebarGroup>
 
@@ -100,5 +100,63 @@ export function AppSidebar({
         </SidebarGroup>
       </SidebarContent>
     </Sidebar>
+  );
+}
+
+/**
+ * Every room this device holds, read straight from local SQLite.
+ *
+ * There is no fetch here and no loading state worth showing: the sync streams decided what
+ * reaches this device long before the sidebar rendered, so a room is either on disk or it is
+ * not one this actor can see. That is also why the visibility union is absent — `rooms` in
+ * `sync-config.yaml` already resolved "public in a workspace I belong to, plus private rooms
+ * I was added to" server-side, and the client just lists what arrived.
+ *
+ * `is_private` is an integer because SQLite has no boolean.
+ */
+function RoomList({
+  workspaceId,
+  pathname,
+}: {
+  workspaceId: string | undefined;
+  pathname: string;
+}) {
+  const collections = useCollections();
+  const { data: rooms } = useLiveQuery(
+    (q) =>
+      collections && workspaceId
+        ? q
+            .from({ r: collections.rooms })
+            .where(({ r }) => eq(r.workspace_id, workspaceId))
+            .orderBy(({ r }) => r.name)
+        : null,
+    [collections, workspaceId],
+  );
+
+  if (!workspaceId) return null;
+  if (!rooms?.length) {
+    return (
+      <p className="text-muted-foreground px-2 py-1 text-xs">
+        {collections ? 'No rooms yet — create one to get started.' : 'Opening local database…'}
+      </p>
+    );
+  }
+
+  return (
+    <SidebarMenu>
+      {rooms.map((room) => {
+        const to = paths.room(workspaceId, room.id);
+        return (
+          <SidebarMenuItem key={room.id}>
+            <SidebarMenuButton isActive={pathname === to} render={<Link to={to} />}>
+              <span className="truncate">{room.name}</span>
+              {room.is_private ? (
+                <span className="text-muted-foreground ml-auto text-[10px]">private</span>
+              ) : null}
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        );
+      })}
+    </SidebarMenu>
   );
 }

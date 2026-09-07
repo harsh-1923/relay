@@ -16,5 +16,12 @@
   "devDependencies": {
     "@relay/tsconfig": "workspace:*",
     "vitest": "^5.0.0"
+  },
+  "dependencies": {
+    "@powersync/common": "^2.2.0",
+    "@powersync/web": "^2.3.0",
+    "@tanstack/db": "^0.8.7",
+    "@tanstack/powersync-db-collection": "^0.1.66",
+    "zod": "^4.5.4"
   }
 }

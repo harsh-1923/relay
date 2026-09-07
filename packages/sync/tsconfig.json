@@ -1,5 +1,16 @@
 {
   "extends": "@relay/tsconfig/react.json",
-  "compilerOptions": { "noEmit": true },
+  "compilerOptions": {
+    "noEmit": true,
+    /**
+     * Inherited as true from the base config, and inert here: this package ships as
+     * uncompiled TS and emits nothing. Leaving it on requires every exported inferred type to
+     * be *nameable*, and `@tanstack/powersync-db-collection` (alpha) does not re-export the
+     * helper types its own return types reference — so the collections in `collections.ts`
+     * would need hand-written annotations that fight the library rather than describe it.
+     */
+    "declaration": false,
+    "declarationMap": false
+  },
   "include": ["src", "test"]
 }
