@@ -23,6 +23,7 @@
     "services:stop": "supabase stop",
     "db:reset": "supabase db reset",
     "build": "pnpm -r --if-present build",
+    "package": "node tooling/bootstrap/src/package.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "typecheck": "pnpm -r --if-present typecheck",

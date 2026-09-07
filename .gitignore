@@ -27,3 +27,7 @@ coverage/
 # same skills at the same revision; `.claude/skills` is only per-tool symlinks into it,
 # recreated by `npx skills add`.
 .claude/
+
+# Desktop packaging: the copied renderer bundle and electron-builder's output.
+apps/desktop/renderer
+apps/desktop/release

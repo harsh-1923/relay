@@ -4,6 +4,12 @@ packages:
   - 'packages/connectors/*'
   - 'tooling/*'
 
+# electron-builder pulls this in for the Windows target; its install script builds Windows
+# tooling we never invoke from here. Answered explicitly because pnpm treats an unanswered
+# build script as a failed install rather than a warning.
+allowBuilds:
+  electron-winstaller: false
+
 # drizzle-orm's optional driver peers otherwise produce several variant paths, and a package
 # that exports Drizzle tables must be compiled against the same instance as the app querying
 # with them — two copies are a type mismatch on every column.

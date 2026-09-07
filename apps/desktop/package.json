@@ -14,7 +14,52 @@
     "@relay/tsconfig": "workspace:*",
     "@types/node": "^26.4.1",
     "electron": "^44.2.0",
+    "electron-builder": "^26.15.3",
     "vitest": "^5.0.0"
   },
-  "main": "dist/main/index.js"
+  "main": "dist/main/index.js",
+  "build": {
+    "appId": "com.relay.desktop",
+    "productName": "relay",
+    "directories": {
+      "output": "release",
+      "buildResources": "resources"
+    },
+    "files": [
+      "dist/**/*",
+      "renderer/**/*",
+      "resources/icon.png",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "resources/icon.png"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "resources/icon.png"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Network",
+      "icon": "resources/icon.png"
+    },
+    "npmRebuild": false,
+    "protocols": [
+      {
+        "name": "relay deep link",
+        "schemes": [
+          "relay"
+        ]
+      }
+    ]
+  }
 }

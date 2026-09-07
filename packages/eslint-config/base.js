@@ -17,6 +17,10 @@ export default tseslint.config(
       '**/coverage/**',
       '**/.turbo/**',
       '**/.wrangler/**',
+      // Desktop packaging output: the built renderer copied into the shell, and
+      // electron-builder's bundles. Both are compiled artefacts, not sources.
+      '**/apps/desktop/renderer/**',
+      '**/apps/desktop/release/**',
     ],
   },
   js.configs.recommended,
